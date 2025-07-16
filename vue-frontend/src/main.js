@@ -12,13 +12,14 @@ function mountVueApp() {
   appDiv.id = "app";
   document.body.appendChild(appDiv);
 
-  const app = createApp(App);
-  app.use(createPinia());
-  app.mount("#app");
+  try {
+    const app = createApp(App);
+    app.use(createPinia());
+    app.mount("#app");
+  } catch (error) {
+    console.error('Vue: Error during mounting:', error);
+  }
 }
 
-if (window.onUpdateHook) {
-  window.onUpdateHook.push(mountVueApp);
-} else {
-  mountVueApp();
-}
+// always mount directly - onUpdateHook doesn't work in reviewer context
+mountVueApp();
