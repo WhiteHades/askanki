@@ -16,12 +16,14 @@ export default defineConfig({
         entryFileNames: `assets/index.js`,
         chunkFileNames: `assets/index.js`,
         assetFileNames: (assetInfo) => {
-          if (assetInfo.name === "style.css") {
+          if (assetInfo.name && assetInfo.name.endsWith('.css')) {
             return "assets/index.css";
           }
           return `assets/[name].[ext]`;
         },
+        format: 'iife',
       },
     },
+    target: 'es2015',
   },
 });
