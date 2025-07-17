@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { SparklesIcon, XMarkIcon } from '@heroicons/vue/24/outline'
+import { SparklesIcon } from '@heroicons/vue/24/outline'
 import AIAssistant from './components/AIAssistant.vue'
 
 const isVisible = ref(false)
@@ -56,15 +56,7 @@ onMounted(() => {
     </div>
 
     <div v-if="isVisible" class="ai-panel-content">
-      <div class="ai-header">
-        <div class="ai-title">
-          <SparklesIcon class="w-3.5 h-3.5" />
-        </div>
-        <button @click="hideAIPanel" class="hide-btn">
-          <XMarkIcon class="w-2.5 h-2.5" />
-        </button>
-      </div>
-      <AIAssistant />
+      <AIAssistant @close="hideAIPanel" />
     </div>
   </div>
 </template>
@@ -155,54 +147,7 @@ onMounted(() => {
 }
 
 
-.ai-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.02);
-  backdrop-filter: blur(10px);
-  border-radius: 16px 16px 0 0;
-}
 
-.ai-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: rgba(255, 255, 255, 0.9);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.2px;
-}
-
-.ai-title svg {
-  opacity: 0.7;
-}
-
-.hide-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: rgba(255, 255, 255, 0.08);
-  border: none;
-  border-radius: 8px;
-  color: rgba(255, 255, 255, 0.6);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.hide-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.9);
-  transform: scale(1.05);
-}
-
-.hide-btn:active {
-  transform: scale(0.95);
-}
 
 
 .ai-container.expanded {
@@ -250,18 +195,6 @@ onMounted(() => {
     color: rgba(0, 0, 0, 0.8);
   }
   
-  .ai-title {
-    color: rgba(0, 0, 0, 0.8);
-  }
-  
-  .hide-btn {
-    background: rgba(0, 0, 0, 0.05);
-    color: rgba(0, 0, 0, 0.5);
-  }
-  
-  .hide-btn:hover {
-    background: rgba(0, 0, 0, 0.08);
-    color: rgba(0, 0, 0, 0.7);
-  }
+
 }
 </style>
