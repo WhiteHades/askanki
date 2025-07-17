@@ -52,7 +52,7 @@ onMounted(() => {
     class="ai-container"
   >
     <div v-if="!isVisible" class="ai-button-content" @click="toggleAIPanel">
-      <SparklesIcon class="w-3 h-3" />
+      <SparklesIcon class="ai-icon" />
     </div>
 
     <div v-if="isVisible" class="ai-panel-content">
@@ -123,6 +123,11 @@ onMounted(() => {
 .ai-container:not(.expanded):hover .ai-button-content {
   color: rgba(255, 255, 255, 0.95);
   transform: scale(1.1);
+}
+
+.ai-icon {
+  width: 20px;
+  height: 20px;
 }
 
 
