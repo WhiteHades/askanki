@@ -151,10 +151,6 @@ onMounted(() => {
   }
 }
 
-
-
-
-
 .ai-container.expanded {
   overflow-y: auto;
 }
