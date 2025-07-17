@@ -7,7 +7,7 @@ import {
   TrashIcon,
   XMarkIcon,
   SparklesIcon,
-  ArrowRightIcon
+  ArrowUpIcon
 } from '@heroicons/vue/24/outline'
 
 const cardContent = ref('')
@@ -22,6 +22,7 @@ const hasAutoSent = ref(false)
 const messagesContainer = ref(null)
 const isAutoAnalysis = ref(false)
 const currentCardMessages = ref([])
+const showExpandedControls = ref(false)
 
 const hasMessages = computed(() => messages.value.length > 0)
 const modelDisplayName = computed(() => {
@@ -271,6 +272,14 @@ const triggerAnalysis = (isManual = false) => {
 const autoSendCardAnalysis = () => triggerAnalysis(false)
 const manualAnalysis = () => triggerAnalysis(true)
 
+const toggleExpandedControls = () => {
+  showExpandedControls.value = !showExpandedControls.value
+}
+
+const closeExpandedControls = () => {
+  showExpandedControls.value = false
+}
+
 const autoResize = (event) => {
   const textarea = event.target
   textarea.style.height = 'auto'
@@ -329,9 +338,6 @@ onMounted(() => {
       <div class="modal">
         <div class="modal-header">
           <h3>{{ needsApiKey ? 'Setup Required' : 'Settings' }}</h3>
-          <button v-if="!needsApiKey" @click="showSettings = false" class="modal-close">
-            <XMarkIcon class="w-3 h-3" />
-          </button>
         </div>
         
         <div class="modal-body">
@@ -359,19 +365,25 @@ onMounted(() => {
       </div>
     </div>
 
-    <div class="header">
-      <span class="title">{{ modelDisplayName }}</span>
-      <div class="header-right">
-        <button @click="manualAnalysis" class="header-btn" title="analyze current card">
-          <SparklesIcon class="w-2.5 h-2.5" />
-        </button>
-        <button @click="clearChat" class="header-btn" :disabled="!hasMessages">
-          <TrashIcon class="w-2.5 h-2.5" />
-        </button>
-        <button @click="showSettings = true" class="header-btn">
-          <Cog6ToothIcon class="w-2.5 h-2.5" />
-        </button>
-      </div>
+    <div v-if="showExpandedControls" class="expanded-overlay" @click="closeExpandedControls"></div>
+    
+    <div class="expandable-controls" :class="{ 'expanded': showExpandedControls }">
+      <transition name="controls-fade">
+        <div v-if="showExpandedControls" class="expanded-menu">
+          <button @click="manualAnalysis(); showExpandedControls = false" class="action-btn" title="analyze">
+            <SparklesIcon class="action-icon" />
+          </button>
+          <button @click="clearChat(); showExpandedControls = false" class="action-btn" :disabled="!hasMessages" title="clear">
+            <TrashIcon class="action-icon" />
+          </button>
+          <button @click="showSettings = true; showExpandedControls = false" class="action-btn" title="settings">
+            <Cog6ToothIcon class="action-icon" />
+          </button>
+          <button @click="$emit('close')" class="action-btn close-btn" title="close">
+            <XMarkIcon class="action-icon" />
+          </button>
+        </div>
+      </transition>
     </div>
 
     <div class="messages" ref="messagesContainer">
@@ -405,6 +417,10 @@ onMounted(() => {
 
     <div class="input-area">
       <div class="input-container">
+        <button @click="toggleExpandedControls" class="settings-btn" title="settings">
+          <Cog6ToothIcon class="settings-icon" />
+        </button>
+        
         <textarea
           v-model="cardContent"
           placeholder="message"
@@ -415,7 +431,7 @@ onMounted(() => {
         ></textarea>
         
         <button @click="sendMessage" class="send-btn" :disabled="!cardContent.trim() || isLoading">
-          <ArrowRightIcon class="w-2.5 h-2.5" />
+          <ArrowUpIcon class="send-icon" />
         </button>
       </div>
     </div>
@@ -429,8 +445,9 @@ onMounted(() => {
   flex-direction: column;
   font-family: BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   background: transparent;
-  font-size: 11px;
+  font-size: 12px;
   overflow: hidden;
+  position: relative;
 }
 
 .modal-overlay {
@@ -448,9 +465,9 @@ onMounted(() => {
 .modal {
   background: rgba(20, 20, 22, 0.95);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  padding: 12px;
-  min-width: 260px;
+  border-radius: 8px;
+  padding: 20px;
+  min-width: 300px;
   animation: slide-up 0.2s ease;
 }
 
@@ -458,40 +475,26 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 16px;
 }
 
 .modal-header h3 {
   margin: 0;
   color: white;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
-}
-
-.modal-close {
-  background: none;
-  border: none;
-  color: rgba(255, 255, 255, 0.6);
-  cursor: pointer;
-  padding: 2px;
-  border-radius: 2px;
-  transition: color 0.15s ease;
-}
-
-.modal-close:hover {
-  color: white;
 }
 
 .modal-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .field label {
@@ -503,8 +506,8 @@ onMounted(() => {
 .input {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
-  padding: 4px 6px;
+  border-radius: 4px;
+  padding: 6px 10px;
   color: white;
   font-size: 11px;
   transition: border-color 0.15s ease;
@@ -519,8 +522,8 @@ onMounted(() => {
   background: rgba(255, 255, 255, 0.9);
   color: black;
   border: none;
-  border-radius: 3px;
-  padding: 4px 8px;
+  border-radius: 4px;
+  padding: 6px 12px;
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
@@ -536,60 +539,109 @@ onMounted(() => {
   cursor: not-allowed;
 }
 
-.header {
+.expanded-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 15;
+  background: transparent;
+}
+
+.expandable-controls {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 20;
+}
+
+.expanded-menu {
+  position: absolute;
+  top: 32px;
+  right: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  min-height: 18px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  box-shadow: 
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
-.title {
-  color: white;
-  font-size: 10px;
-  font-weight: 600;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 1px;
-}
-
-.header-btn {
+.action-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 12px;
-  height: 12px;
-  background: none;
-  border: none;
-  color: rgba(255, 255, 255, 0.6);
+  width: 28px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.8);
   cursor: pointer;
-  border-radius: 2px;
-  transition: all 0.15s ease;
+  border-radius: 8px;
+  transition: all 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
+  padding: 2px;
 }
 
-.header-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
-  color: white;
+.action-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.95);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
-.header-btn:disabled {
+.action-btn:disabled {
   opacity: 0.3;
   cursor: not-allowed;
+}
+
+.action-btn.close-btn {
+  background: rgba(220, 38, 38, 0.1);
+  border-color: rgba(220, 38, 38, 0.2);
+  color: rgba(255, 100, 100, 0.9);
+}
+
+.action-btn.close-btn:hover {
+  background: rgba(220, 38, 38, 0.2);
+  border-color: rgba(220, 38, 38, 0.4);
+  color: rgba(255, 120, 120, 0.95);
+}
+
+.action-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.controls-fade-enter-active,
+.controls-fade-leave-active {
+  transition: all 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
+}
+
+.controls-fade-enter-from {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.95);
+}
+
+.controls-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.95);
 }
 
 .messages {
   flex: 1;
   overflow-y: auto;
-  padding: 8px;
+  padding: 28px 12px 4px 12px;
   scroll-behavior: smooth;
 }
 
 .messages::-webkit-scrollbar {
-  width: 2px;
+  width: 4px;
 }
 
 .messages::-webkit-scrollbar-track {
@@ -598,7 +650,7 @@ onMounted(() => {
 
 .messages::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.1);
-  border-radius: 1px;
+  border-radius: 2px;
 }
 
 .empty {
@@ -612,15 +664,15 @@ onMounted(() => {
 
 .empty-text {
   color: rgba(255, 255, 255, 0.5);
-  font-size: 10px;
+  font-size: 11px;
   margin: 0;
 }
 
 .msg {
-  margin-bottom: 6px;
-  max-width: 90%;
+  margin-bottom: 8px;
+  max-width: 85%;
   opacity: 0;
-  animation: fade-slide-in 0.4s ease forwards;
+  animation: fade-slide-in 0.3s ease forwards;
 }
 
 .msg-user {
@@ -632,8 +684,8 @@ onMounted(() => {
 }
 
 .msg-content {
-  padding: 4px 8px;
-  border-radius: 8px;
+  padding: 8px 12px;
+  border-radius: 12px;
   font-size: 11px;
   line-height: 1.3;
   word-wrap: break-word;
@@ -642,14 +694,14 @@ onMounted(() => {
 .msg-user .msg-content {
   background: rgba(255, 255, 255, 0.9);
   color: black;
-  border-bottom-right-radius: 2px;
+  border-bottom-right-radius: 4px;
 }
 
 .msg-ai .msg-content {
   background: rgba(255, 255, 255, 0.05);
   color: rgba(255, 255, 255, 0.95);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-bottom-left-radius: 2px;
+  border-bottom-left-radius: 4px;
 }
 
 .msg-error .msg-content {
@@ -673,10 +725,10 @@ onMounted(() => {
   text-align: left;
 }
 
-.markdown-content h1 { font-size: 12px; }
-.markdown-content h2 { font-size: 11px; }
-.markdown-content h3 { font-size: 11px; }
-.markdown-content h4 { font-size: 10px; }
+.markdown-content h1 { font-size: 14px; }
+.markdown-content h2 { font-size: 13px; }
+.markdown-content h3 { font-size: 12px; }
+.markdown-content h4 { font-size: 11px; }
 
 .markdown-content p {
   margin: 0.2em 0;
@@ -687,7 +739,7 @@ onMounted(() => {
 .markdown-content ul,
 .markdown-content ol {
   margin: 0.2em 0;
-  padding-left: 0.8em;
+  padding-left: 1em;
   text-align: left;
 }
 
@@ -712,7 +764,7 @@ onMounted(() => {
   padding: 0.1em 0.2em;
   border-radius: 2px;
   font-family: 'SF Mono', Monaco, monospace;
-  font-size: 10px;
+  font-size: 9px;
   text-align: left;
 }
 
@@ -732,9 +784,9 @@ onMounted(() => {
 }
 
 .msg-time {
-  font-size: 8px;
+  font-size: 9px;
   color: rgba(255, 255, 255, 0.4);
-  margin-top: 1px;
+  margin-top: 2px;
   text-align: right;
 }
 
@@ -745,17 +797,17 @@ onMounted(() => {
 .typing {
   display: flex;
   align-items: center;
-  gap: 1px;
-  padding: 4px 8px;
+  gap: 2px;
+  padding: 12px 16px;
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  border-bottom-left-radius: 2px;
+  border-radius: 12px;
+  border-bottom-left-radius: 4px;
 }
 
 .typing span {
-  width: 2px;
-  height: 2px;
+  width: 4px;
+  height: 4px;
   background: rgba(255, 255, 255, 0.6);
   border-radius: 50%;
   animation: typing-pulse 1.4s infinite ease-in-out;
@@ -770,19 +822,20 @@ onMounted(() => {
 }
 
 .input-area {
-  padding: 12px 16px;
+  padding: 8px 12px;
 }
 
 .input-container {
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 20px;
-  padding: 8px 12px;
+  padding: 4px;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-end;
+  gap: 4px;
   transition: all 0.2s ease;
-  min-height: 44px;
+  min-height: 36px;
+  position: relative;
 }
 
 .input-container:focus-within {
@@ -790,18 +843,47 @@ onMounted(() => {
   background: rgba(255, 255, 255, 0.1);
 }
 
+.settings-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  border-radius: 11px;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
+  flex-shrink: 0;
+  margin: 2px;
+  padding: 1px;
+}
+
+.settings-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.9);
+  transform: scale(1.05);
+}
+
+.settings-icon {
+  width: 14px;
+  height: 14px;
+}
+
 .textarea {
   flex: 1;
   background: none;
   border: none;
   color: white;
-  font-size: 14px;
-  line-height: 1.4;
+  font-size: 11px;
+  line-height: 1.3;
   resize: none;
   outline: none;
-  max-height: 100px;
+  max-height: 80px;
   font-family: inherit;
-  padding: 4px 0;
+  padding: 6px 4px;
+  margin: 2px 0;
 }
 
 .textarea::placeholder {
@@ -812,26 +894,34 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   background: rgba(255, 255, 255, 0.6);
   border: none;
-  border-radius: 10px;
+  border-radius: 11px;
   color: rgba(0, 0, 0, 0.8);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
   flex-shrink: 0;
+  margin: 2px;
+  padding: 1px;
 }
 
 .send-btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.8);
   color: black;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 .send-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
-  transform: none;
+}
+
+.send-icon {
+  width: 14px;
+  height: 14px;
 }
 
 @keyframes fade-in {
@@ -842,7 +932,7 @@ onMounted(() => {
 @keyframes slide-up {
   from { 
     opacity: 0; 
-    transform: translateY(10px) scale(0.98); 
+    transform: translateY(12px) scale(0.98); 
   }
   to { 
     opacity: 1; 
@@ -853,7 +943,7 @@ onMounted(() => {
 @keyframes fade-slide-in {
   from { 
     opacity: 0; 
-    transform: translateY(6px); 
+    transform: translateY(8px); 
   }
   to { 
     opacity: 1; 
