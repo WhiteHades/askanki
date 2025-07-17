@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@google/genai": "^1.10.0",
     "@heroicons/vue": "^2.2.0",
     "marked": "^16.0.0",
     "pinia": "^3.0.3",
