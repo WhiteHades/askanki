@@ -15,11 +15,13 @@ const messages = ref([])
 const isLoading = ref(false)
 const showSettings = ref(false)
 const apiKey = ref('')
-const modelName = ref('gemini-2.5-flash')
+const modelName = ref('gemini-2.5-flash-lite-preview-06-17')
 const needsApiKey = ref(false)
 const currentCardContent = ref('')
 const hasAutoSent = ref(false)
 const messagesContainer = ref(null)
+const isAutoAnalysis = ref(false)
+const currentCardMessages = ref([])
 
 const hasMessages = computed(() => messages.value.length > 0)
 const modelDisplayName = computed(() => {
@@ -29,107 +31,77 @@ const modelDisplayName = computed(() => {
 
 marked.setOptions({ breaks: true, gfm: true })
 
-const languageLearningPrompt = `You are an expert language tutor. When the content appears to be language learning related, ALWAYS follow this exact structure, if this is language learning content:
+const languageLearningPrompt = `You are an expert language tutor. When the content appears to be language learning related, ALWAYS follow this exact structure:
 
-**Entry:**
-The word/sentence/phrase in the target language. Use bold.
-
-**Translation (Literal & Natural):**
-- Literal English translation (word-for-word if useful)
-- Natural English equivalent (how it's actually said)
-
-**Part of Speech & Form:**
-- What part of speech is it? (noun, verb, phrase, etc.)
-- Any important conjugation/form notes
-
-**Pronunciation:**
-- IPA or basic phonetic help
-- Stress/syllables if tricky
-
-**Grammar Explanation:**
-- What grammar rules are involved?
-- Explain conjugations, particles, tense, structure
-
-**Usage & Context:**
-- When and how is this used in real conversation?
-- Formal/casual? Regional?
-
-**Example Sentences:**
-- 2–3 short example sentences using the word/phrase naturally
-- Include translations
-
-**Memory Tip:**
-- Fun or visual trick to help remember it`
-
-onMounted(() => {
-  loadCurrentCard()
-  loadConfig()
-  
-  window.addEventListener('ai-panel-opened', handlePanelOpened)
-  
-  const observer = new MutationObserver(() => {
-    const newCardContent = getCurrentCardContent()
-    if (newCardContent && newCardContent !== currentCardContent.value) {
-      currentCardContent.value = newCardContent
-      cardContent.value = newCardContent
-      
-      if (window.aiPanelVisible && !needsApiKey.value) {
-        autoSendCardAnalysis()
-      }
-    }
-  })
-  
-  const qaElement = document.querySelector('#qa') || document.body
-  observer.observe(qaElement, { childList: true, subtree: true })
-})
-
-const handlePanelOpened = () => {
-  if (!hasAutoSent.value && !needsApiKey.value && cardContent.value.trim()) {
-    autoSendCardAnalysis()
-    hasAutoSent.value = true
-  } else if (needsApiKey.value) {
-    showSettings.value = true
-  }
-}
+**Entry:** The word/sentence/phrase in the target language. Use bold.
+**Translation (Literal & Natural):** - Literal English translation (word-for-word if useful) - Natural English equivalent (how it's actually said)
+**Part of Speech & Form:** - What part of speech is it? (noun, verb, phrase, etc.) - Any important conjugation/form notes
+**Pronunciation:** - IPA or basic phonetic help - Stress/syllables if tricky
+**Grammar Explanation:** - What grammar rules are involved? - Explain conjugations, particles, tense, structure
+**Usage & Context:** - When and how is this used in real conversation? - Formal/casual? Regional?
+**Example Sentences:** - 2–3 short example sentences using the word/phrase naturally - Include translations
+**Memory Tip:** - Fun or visual trick to help remember it`
 
 const getCurrentCardContent = () => {
   try {
     const qaElement = document.querySelector('#qa')
-    if (qaElement) {
-      return qaElement.innerText.trim()
-    }
+    if (!qaElement) return { text: '', images: [], hasImages: false }
+    
+    const text = qaElement.innerText.trim()
+    const images = Array.from(qaElement.querySelectorAll('img')).map(img => ({
+      src: img.src,
+      alt: img.alt || '',
+      naturalWidth: img.naturalWidth,
+      naturalHeight: img.naturalHeight,
+      complete: img.complete
+    }))
+    
+    return { text, images, hasImages: images.length > 0 }
   } catch (error) {
-          console.log('could not get card content:', error)
-  }
-  return ''
-}
-
-const loadCurrentCard = () => {
-  const content = getCurrentCardContent()
-  if (content) {
-    cardContent.value = content
-    currentCardContent.value = content
+    console.error('could not get card content:', error)
+    return { text: '', images: [], hasImages: false }
   }
 }
 
 const loadConfig = async () => {
   try {
-    const savedApiKey = localStorage.getItem('ai-assistant-api-key')
-    const savedModelName = localStorage.getItem('ai-assistant-model-name')
-    
-    if (savedApiKey) {
-      apiKey.value = savedApiKey
-      needsApiKey.value = false
-    } else {
-      needsApiKey.value = true
+    let savedApiKey, savedModelName
+    try {
+      savedApiKey = localStorage.getItem('ai-assistant-api-key')
+      savedModelName = localStorage.getItem('ai-assistant-model-name')
+    } catch (e) {
+      savedApiKey = window.aiAssistantApiKey
+      savedModelName = window.aiAssistantModelName
     }
     
-    if (savedModelName) {
-      modelName.value = savedModelName
+    needsApiKey.value = !savedApiKey
+    if (savedApiKey) apiKey.value = savedApiKey
+    if (savedModelName) modelName.value = savedModelName
+  } catch (error) {
+    console.error('error loading config:', error)
+    needsApiKey.value = true
+  }
+}
+
+const saveSettings = () => {
+  if (!apiKey.value.trim()) return
+  
+  try {
+    try {
+      localStorage.setItem('ai-assistant-api-key', apiKey.value.trim())
+      localStorage.setItem('ai-assistant-model-name', modelName.value)
+    } catch (e) {
+      window.aiAssistantApiKey = apiKey.value.trim()
+      window.aiAssistantModelName = modelName.value
+    }
+    
+    needsApiKey.value = showSettings.value = hasAutoSent.value = false
+    
+    if (cardContent.value?.trim?.() || currentCardContent.value?.text?.trim?.()) {
+      setTimeout(autoSendCardAnalysis, 300)
     }
   } catch (error) {
-    console.log('Could not load config:', error)
-    needsApiKey.value = true
+    console.error('could not save settings:', error)
   }
 }
 
@@ -138,55 +110,126 @@ const scrollToBottom = async () => {
   messagesContainer.value?.scrollTo(0, messagesContainer.value.scrollHeight)
 }
 
-const buildContextualPrompt = (currentPrompt) => {
-  const recentMessages = messages.value.slice(-6)
-  const context = recentMessages.length ? 
-    `${languageLearningPrompt}\n\nrecent conversation context:\n${recentMessages.map(m => `${m.type === 'user' ? 'user' : 'assistant'}: ${m.content}`).join('\n')}\n\n` : 
-    `${languageLearningPrompt}\n\n`
-  return `${context}current request: ${currentPrompt}`
+const buildContextualPrompt = (currentPrompt, isAutoAnalysis = false) => {
+  if (isAutoAnalysis) return `${languageLearningPrompt}\n\ncurrent request: ${currentPrompt}`
+  
+  const cardMessages = currentCardMessages.value.slice(-8)
+  if (cardMessages.length > 0) {
+    const context = cardMessages.map(m => `${m.type === 'user' ? 'user' : 'assistant'}: ${m.content}`).join('\n')
+    return `you are a helpful language learning assistant. continue the conversation naturally based on the context.\n\nconversation context:\n${context}\n\nuser: ${currentPrompt}`
+  }
+  
+  return `you are a helpful language learning assistant. answer naturally and conversationally.\n\nuser: ${currentPrompt}`
 }
 
-const callGeminiAPI = async (prompt) => {
-  const ai = new GoogleGenAI({ apiKey: apiKey.value })
-  const response = await ai.models.generateContent({
-    model: modelName.value,
-    contents: prompt,
-    config: {
-      temperature: 0.7,
-      topK: 40,
-      topP: 0.95,
-      maxOutputTokens: 2048,
+const imageToBase64 = async (src) => {
+  return new Promise((resolve, reject) => {
+    if (src.startsWith('data:')) {
+      try {
+        const base64 = src.split(',')[1]
+        if (!base64) throw new Error('invalid data url format')
+        resolve(base64)
+      } catch (error) {
+        reject(error)
+      }
+      return
+    }
+    
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        const ctx = canvas.getContext('2d')
+        canvas.width = img.naturalWidth
+        canvas.height = img.naturalHeight
+        ctx.drawImage(img, 0, 0)
+        resolve(canvas.toDataURL('image/jpeg', 0.8).split(',')[1])
+      } catch (error) {
+        fetchFallback()
+      }
+    }
+    
+    img.onerror = fetchFallback
+    img.src = src
+    
+    async function fetchFallback() {
+      try {
+        const response = await fetch(src, { mode: 'cors', credentials: 'omit' })
+        if (!response.ok) throw new Error(`http ${response.status}`)
+        
+        const blob = await response.blob()
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result.split(',')[1])
+        reader.onerror = reject
+        reader.readAsDataURL(blob)
+      } catch (error) {
+        reject(error)
+      }
     }
   })
-  return response.text
 }
+
+const callGeminiAPI = async (prompt, cardData = null) => {
+  const ai = new GoogleGenAI({ apiKey: apiKey.value })
+  
+  try {
+    const contentParts = [{ text: prompt }]
+    
+    if (cardData?.hasImages) {
+      for (const image of cardData.images) {
+        try {
+          const base64Data = await imageToBase64(image.src)
+          const extension = image.src.toLowerCase().split('.').pop()?.split('?')[0]
+          const mimeTypes = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif' }
+          const mimeType = image.src.startsWith('data:') ? image.src.match(/data:([^;]+)/)?.[1] || 'image/jpeg' : mimeTypes[extension] || 'image/jpeg'
+          
+          contentParts.push({ inlineData: { mimeType, data: base64Data } })
+        } catch (error) {
+          console.error('failed to process image:', error)
+        }
+      }
+    }
+    
+    const response = await ai.models.generateContent({
+      model: modelName.value,
+      contents: [{ parts: contentParts }],
+      generationConfig: { temperature: 0.7, topK: 40, topP: 0.95, maxOutputTokens: 2048 }
+    })
+    
+    return response.text
+  } catch (error) {
+    console.error('api call failed:', error)
+    throw error
+  }
+}
+
+const createMessage = (type, content) => ({ id: Date.now() + Math.random(), type, content, timestamp: new Date() })
 
 const sendMessage = async () => {
   if (!cardContent.value.trim()) return
-  
-  if (needsApiKey.value) {
-    showSettings.value = true
-    return
-  }
+  if (needsApiKey.value) { showSettings.value = true; return }
   
   const currentPrompt = cardContent.value
-  const createMessage = (type, content) => ({
-    id: Date.now() + Math.random(),
-    type,
-    content,
-    timestamp: new Date()
-  })
-  
-  messages.value.push(createMessage('user', currentPrompt))
+  const userMessage = createMessage('user', currentPrompt)
+  messages.value.push(userMessage)
+  currentCardMessages.value.push(userMessage)
   cardContent.value = ''
   isLoading.value = true
   scrollToBottom()
   
   try {
-    const aiResponse = await callGeminiAPI(buildContextualPrompt(currentPrompt))
-    messages.value.push(createMessage('ai', aiResponse))
+    const cardData = isAutoAnalysis.value && currentCardContent.value?.hasImages ? currentCardContent.value : null
+    const aiResponse = await callGeminiAPI(buildContextualPrompt(currentPrompt, isAutoAnalysis.value), cardData)
+    const aiMessage = createMessage('ai', aiResponse)
+    messages.value.push(aiMessage)
+    currentCardMessages.value.push(aiMessage)
+    isAutoAnalysis.value = false
   } catch (error) {
-    messages.value.push(createMessage('error', 'error: could not get ai response. please check your api key and try again.'))
+    const errorMessage = createMessage('error', 'error: could not get ai response. please check your api key and try again.')
+    messages.value.push(errorMessage)
+    currentCardMessages.value.push(errorMessage)
   } finally {
     isLoading.value = false
     scrollToBottom()
@@ -195,28 +238,38 @@ const sendMessage = async () => {
 
 const clearChat = () => {
   messages.value = []
+  currentCardMessages.value = []
   cardContent.value = ''
+  isAutoAnalysis.value = false
 }
 
-const saveSettings = () => {
-  if (!apiKey.value.trim()) return
+const triggerAnalysis = (isManual = false) => {
+  if (needsApiKey.value || isLoading.value) return
   
-  try {
-    localStorage.setItem('ai-assistant-api-key', apiKey.value.trim())
-    localStorage.setItem('ai-assistant-model-name', modelName.value)
-    needsApiKey.value = showSettings.value = hasAutoSent.value = false
-    
-    if (cardContent.value.trim()) setTimeout(() => autoSendCardAnalysis(), 300)
-  } catch (error) {
-    console.error('could not save settings:', error)
-  }
+  if (isManual) currentCardContent.value = getCurrentCardContent()
+  
+  const hasText = cardContent.value.trim() || currentCardContent.value?.text?.trim()
+  const hasImages = currentCardContent.value?.hasImages
+  
+  if (!hasText && !hasImages) return
+  
+  currentCardMessages.value = []
+  isAutoAnalysis.value = true
+  
+  const imageCount = currentCardContent.value?.images?.length || 0
+  const imageText = imageCount > 0 ? ` (${imageCount} image${imageCount > 1 ? 's' : ''})` : ''
+  
+  let prompt = 'analyze this flashcard content'
+  if (hasImages && hasText) prompt += ` including any images${imageText}: ${hasText}`
+  else if (hasImages) prompt += `${imageText} (image-only card)`
+  else prompt += `: ${hasText}`
+  
+  cardContent.value = prompt
+  sendMessage()
 }
 
-const autoSendCardAnalysis = async () => {
-  if (!cardContent.value.trim() || needsApiKey.value || isLoading.value) return
-  cardContent.value = `analyze this flashcard content: ${cardContent.value.trim()}`
-  await sendMessage()
-}
+const autoSendCardAnalysis = () => triggerAnalysis(false)
+const manualAnalysis = () => triggerAnalysis(true)
 
 const autoResize = (event) => {
   const textarea = event.target
@@ -224,9 +277,50 @@ const autoResize = (event) => {
   textarea.style.height = Math.min(textarea.scrollHeight, 100) + 'px'
 }
 
-const renderMarkdown = (content) => {
-  return marked(content)
-}
+const renderMarkdown = (content) => marked(content)
+
+onMounted(() => {
+  const content = getCurrentCardContent()
+  if (content.text || content.hasImages) {
+    cardContent.value = content.text
+    currentCardContent.value = content
+  }
+  
+  loadConfig()
+  window.addEventListener('ai-panel-opened', () => {
+    const hasText = cardContent.value?.trim?.() || currentCardContent.value?.text?.trim?.()
+    const hasImages = currentCardContent.value?.hasImages
+    
+    if (!hasAutoSent.value && !needsApiKey.value && (hasText || hasImages)) {
+      currentCardMessages.value = []
+      autoSendCardAnalysis()
+      hasAutoSent.value = true
+    } else if (needsApiKey.value) {
+      showSettings.value = true
+    }
+  })
+  
+  const observer = new MutationObserver(() => {
+    const newCardContent = getCurrentCardContent()
+    const oldCardContent = currentCardContent.value
+    
+    const contentChanged = newCardContent?.text !== oldCardContent?.text || newCardContent?.images?.length !== oldCardContent?.images?.length
+    
+    if (newCardContent && contentChanged) {
+      currentCardContent.value = newCardContent
+      cardContent.value = newCardContent.text || ''
+      hasAutoSent.value = false
+      currentCardMessages.value = []
+      
+      if (window.aiPanelVisible && !needsApiKey.value && (newCardContent.text || newCardContent.hasImages)) {
+        autoSendCardAnalysis()
+      }
+    }
+  })
+  
+  const qaElement = document.querySelector('#qa') || document.body
+  observer.observe(qaElement, { childList: true, subtree: true })
+})
 </script>
 
 <template>
@@ -254,7 +348,7 @@ const renderMarkdown = (content) => {
           <div class="field">
             <label>model</label>
             <select v-model="modelName" class="input">
-              <option value="gemini-2.5-flash">gemini 2.5 flash</option>
+              <option value="gemini-2.5-flash-lite-preview-06-17">gemini 2.5 flash</option>
             </select>
           </div>
           
@@ -268,6 +362,9 @@ const renderMarkdown = (content) => {
     <div class="header">
       <span class="title">{{ modelDisplayName }}</span>
       <div class="header-right">
+        <button @click="manualAnalysis" class="header-btn" title="analyze current card">
+          <SparklesIcon class="w-2.5 h-2.5" />
+        </button>
         <button @click="clearChat" class="header-btn" :disabled="!hasMessages">
           <TrashIcon class="w-2.5 h-2.5" />
         </button>
@@ -333,6 +430,7 @@ const renderMarkdown = (content) => {
   font-family: BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   background: transparent;
   font-size: 11px;
+  overflow: hidden;
 }
 
 .modal-overlay {
@@ -562,6 +660,7 @@ const renderMarkdown = (content) => {
 
 .markdown-content {
   font-family: inherit;
+  text-align: left !important;
 }
 
 .markdown-content h1,
@@ -571,6 +670,7 @@ const renderMarkdown = (content) => {
   margin: 0.4em 0 0.2em 0;
   color: rgba(255, 255, 255, 0.95);
   font-weight: 600;
+  text-align: left;
 }
 
 .markdown-content h1 { font-size: 12px; }
@@ -581,21 +681,25 @@ const renderMarkdown = (content) => {
 .markdown-content p {
   margin: 0.2em 0;
   line-height: 1.3;
+  text-align: left;
 }
 
 .markdown-content ul,
 .markdown-content ol {
   margin: 0.2em 0;
-  padding-left: 1em;
+  padding-left: 0.8em;
+  text-align: left;
 }
 
 .markdown-content li {
   margin: 0.05em 0;
+  text-align: left;
 }
 
 .markdown-content strong {
   color: rgba(255, 255, 255, 1);
   font-weight: 600;
+  text-align: left;
 }
 
 .markdown-content em {
@@ -609,6 +713,7 @@ const renderMarkdown = (content) => {
   border-radius: 2px;
   font-family: 'SF Mono', Monaco, monospace;
   font-size: 10px;
+  text-align: left;
 }
 
 .markdown-content pre {
