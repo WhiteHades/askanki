@@ -25,10 +25,6 @@ const currentCardMessages = ref([])
 const showExpandedControls = ref(false)
 
 const hasMessages = computed(() => messages.value.length > 0)
-const modelDisplayName = computed(() => {
-  const name = modelName.value.toLowerCase()
-  return name.includes('gemini') ? 'g' : name.includes('gpt') ? 'gpt' : name.includes('claude') ? 'c' : 'ai'
-})
 
 marked.setOptions({ breaks: true, gfm: true })
 
