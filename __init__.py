@@ -41,7 +41,6 @@ def webview_bridge():
     def save_config(api_key, model_name):
         save_ai_config(api_key, model_name)
 
-    # Expose to window object
     mw.web.eval(f"""
         window.ankiGetAIConfig = function() {{
             return {get_config()};
@@ -65,7 +64,6 @@ def handle_pycmd(handled, cmd, context):
 gui_hooks.webview_will_set_content.append(inject_vue_ui)
 gui_hooks.webview_did_receive_js_message.append(handle_pycmd)
 
-# Initialize bridge when reviewer loads
 def on_reviewer_did_show_question(card):
     webview_bridge()
 
