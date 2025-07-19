@@ -156,7 +156,7 @@ onMounted(() => {
 }
 
 .ai-container.expanded::-webkit-scrollbar {
-  width: 6px;
+  width: 3px;
 }
 
 .ai-container.expanded::-webkit-scrollbar-track {
@@ -164,11 +164,11 @@ onMounted(() => {
 }
 
 .ai-container.expanded::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 1.5px;
 }
 
 .ai-container.expanded::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.15);
 }
 </style>
