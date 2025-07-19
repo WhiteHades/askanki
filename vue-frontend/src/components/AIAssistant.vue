@@ -28,16 +28,31 @@ const hasMessages = computed(() => messages.value.length > 0);
 
 marked.setOptions({ breaks: true, gfm: true });
 
-const languageLearningPrompt = `You are an expert language tutor. When the content appears to be language learning related, ALWAYS follow this exact structure:
+const languageLearningPrompt = `You are an expert language tutor. When the content appears to be language learning related, ALWAYS follow this exact structure below, do not deviate from it:
 
-**Entry:** The word/sentence/phrase in the target language. Use bold.
-**Translation (Literal & Natural):** - Literal English translation (word-for-word if useful) - Natural English equivalent (how it's actually said)
-**Part of Speech & Form:** - What part of speech is it? (noun, verb, phrase, etc.) - Any important conjugation/form notes
-**Pronunciation:** - IPA or basic phonetic help - Stress/syllables if tricky
-**Grammar Explanation:** - What grammar rules are involved? - Explain conjugations, particles, tense, structure
-**Usage & Context:** - When and how is this used in real conversation? - Formal/casual? Regional?
-**Example Sentences:** - 2–3 short example sentences using the word/phrase naturally - Include translations
-**Memory Tip:** - Fun or visual trick to help remember it`;
+The word/sentence/phrase in the target language. Use bold.
+
+**Translation:**
+ - Literal: [word-for-word translation]
+ - Natural: [how it’s actually said]
+
+**Grammar:**
+ - [Part of speech]
+ - [Key grammar points, e.g., conjugation, tense]
+
+ **Pronunciation:**
+ - [IPA or phonetic help]
+ - [Stress/syllables if tricky]
+
+ **Usage:**
+ - [Brief context, e.g., "Formal, used in business settings"]
+
+ **Examples:**
+ - [Sentence 1] ([Translation])
+ - [Sentence 2] ([Translation])
+
+ **Memory Tip:**
+ - [Brief tip or mnemonic to help remember]`;
 
 const getCurrentCardContent = () => {
   try {
@@ -318,7 +333,7 @@ const triggerAnalysis = (isManual = false) => {
   const imageText =
     imageCount > 0 ? ` (${imageCount} image${imageCount > 1 ? "s" : ""})` : "";
 
-  let prompt = "analyze this flashcard content";
+  let prompt = "analyse this flashcard content";
   if (hasImages && hasText)
     prompt += ` including any images${imageText}: ${hasText}`;
   else if (hasImages) prompt += `${imageText} (image-only card)`;
@@ -830,6 +845,7 @@ onMounted(() => {
   background: rgba(255, 255, 255, 0.9);
   color: black;
   border-bottom-right-radius: 4px;
+  text-align: left !important;
 }
 
 .msg-ai .msg-content {
@@ -857,7 +873,7 @@ onMounted(() => {
   margin: 0.4em 0 0.2em 0;
   color: rgba(255, 255, 255, 0.95);
   font-weight: 600;
-  text-align: left;
+  text-align: left !important;
 }
 
 .markdown-content h1 {
@@ -876,30 +892,31 @@ onMounted(() => {
 .markdown-content p {
   margin: 0.2em 0;
   line-height: 1.3;
-  text-align: left;
+  text-align: left !important;
 }
 
 .markdown-content ul,
 .markdown-content ol {
   margin: 0.2em 0;
   padding-left: 1em;
-  text-align: left;
+  text-align: left !important;
 }
 
 .markdown-content li {
   margin: 0.05em 0;
-  text-align: left;
+  text-align: left !important;
 }
 
 .markdown-content strong {
   color: rgba(255, 255, 255, 1);
   font-weight: 600;
-  text-align: left;
+  text-align: left !important;
 }
 
 .markdown-content em {
   font-style: italic;
   color: rgba(255, 255, 255, 0.9);
+  text-align: left !important;
 }
 
 .markdown-content code {
@@ -908,7 +925,7 @@ onMounted(() => {
   border-radius: 2px;
   font-family: "SF Mono", Monaco, monospace;
   font-size: 9px;
-  text-align: left;
+  text-align: left !important;
 }
 
 .markdown-content pre {
@@ -917,6 +934,7 @@ onMounted(() => {
   border-radius: 3px;
   overflow-x: auto;
   margin: 0.2em 0;
+  text-align: left !important;
 }
 
 .markdown-content blockquote {
@@ -924,6 +942,7 @@ onMounted(() => {
   padding-left: 0.3em;
   margin: 0.2em 0;
   color: rgba(255, 255, 255, 0.8);
+  text-align: left !important;
 }
 
 .msg-time {
