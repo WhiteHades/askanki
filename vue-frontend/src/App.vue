@@ -1,14 +1,17 @@
 <script setup>
 import { ref, onMounted } from "vue";
 import { SparklesIcon } from "@heroicons/vue/24/outline";
+import { Motion } from "motion-v";
 import AIAssistant from "./components/AIAssistant.vue";
 
 const isVisible = ref(false);
 const isAnimating = ref(false);
 const isDragging = ref(false);
+const isPanelDragging = ref(false);
 const buttonPosition = ref({ x: window.innerWidth - 64, y: 20 });
 const originalButtonPosition = ref({ x: window.innerWidth - 64, y: 20 });
 const dragOffset = ref({ x: 0, y: 0 });
+const panelDragOffset = ref({ x: 0, y: 0 });
 
 const toggleAIPanel = () => {
   if (isAnimating.value || isDragging.value) return;
@@ -110,6 +113,72 @@ const stopDrag = () => {
   }, 10);
 };
 
+const startPanelDrag = (event) => {
+  if (isAnimating.value || !isVisible.value) return;
+
+  // don't start drag if clicking on input area, close button, or specific message content
+  const target = event.target;
+  if (
+    target.closest(".input-area") ||
+    target.closest(".close-corner-btn") ||
+    target.closest(".msg") ||
+    target.closest(".msg-content") ||
+    target.closest(".empty") ||
+    target.closest(".typing")
+  ) {
+    return;
+  }
+
+  isPanelDragging.value = true;
+  const rect = event.currentTarget.getBoundingClientRect();
+  panelDragOffset.value = {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  };
+
+  document.addEventListener("mousemove", onPanelDrag);
+  document.addEventListener("mouseup", stopPanelDrag);
+  event.preventDefault();
+};
+
+const onPanelDrag = (event) => {
+  if (!isPanelDragging.value) return;
+
+  const newX = event.clientX - panelDragOffset.value.x;
+  const newY = event.clientY - panelDragOffset.value.y;
+
+  // keep panel within viewport bounds
+  const panelWidth = Math.min(360, window.innerWidth * 0.28);
+  const panelHeight = window.innerHeight - 40;
+  const maxX = window.innerWidth - panelWidth;
+  const maxY = window.innerHeight - panelHeight;
+
+  buttonPosition.value = {
+    x: Math.max(0, Math.min(newX, maxX)),
+    y: Math.max(0, Math.min(newY, maxY)),
+  };
+};
+
+const stopPanelDrag = () => {
+  isPanelDragging.value = false;
+  document.removeEventListener("mousemove", onPanelDrag);
+  document.removeEventListener("mouseup", stopPanelDrag);
+
+  // trigger morph back to normal
+  morphBackToNormal();
+};
+
+const morphBackToNormal = () => {
+  // trigger smooth transition back to normal state
+  const container = document.getElementById("ai-container");
+  if (container) {
+    container.classList.add("morphing-back");
+    setTimeout(() => {
+      container.classList.remove("morphing-back");
+    }, 500);
+  }
+};
+
 onMounted(() => {
   window.toggleAIPanel = toggleAIPanel;
   window.hideAIPanel = hideAIPanel;
@@ -149,18 +218,66 @@ onMounted(() => {
 </script>
 
 <template>
-  <div
+  <Motion
     id="ai-container"
     :class="{
       expanded: isVisible,
       animating: isAnimating,
-      dragging: isDragging,
+      dragging: isDragging || isPanelDragging,
     }"
     class="ai-container"
     :style="{
       left: buttonPosition.x + 'px',
       top: buttonPosition.y + 'px',
     }"
+    :transition="{
+      type: 'spring',
+      stiffness: 600,
+      damping: 40,
+      mass: 0.4,
+      restDelta: 0.001,
+      duration: 0.2,
+    }"
+    :variants="{
+      button: {
+        scale: 1,
+        borderRadius: '22px',
+        width: '44px',
+        height: '44px',
+        background: 'rgba(255, 255, 255, 0.1)',
+        backdropFilter: 'blur(16px)',
+        boxShadow:
+          '0 8px 32px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.1)',
+      },
+      panel: {
+        scale: 1,
+        borderRadius: '16px',
+        width: 'min(360px, 28vw)',
+        height: 'calc(100vh - 40px)',
+        background: 'rgba(20, 20, 20, 0.8)',
+        backdropFilter: 'blur(24px)',
+        boxShadow:
+          '0 20px 60px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.1)',
+      },
+      dragging: {
+        scale: 0.95,
+        borderRadius: '20px',
+        width: 'min(360px, 28vw)',
+        height: 'calc(100vh - 40px)',
+        background: 'rgba(255, 255, 255, 0.15)',
+        backdropFilter: 'blur(20px)',
+        boxShadow:
+          '0 20px 60px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.2)',
+      },
+    }"
+    :initial="'button'"
+    :animate="
+      isVisible
+        ? isDragging || isPanelDragging
+          ? 'dragging'
+          : 'panel'
+        : 'button'
+    "
   >
     <div
       v-if="!isVisible"
@@ -174,10 +291,11 @@ onMounted(() => {
     <div
       v-if="isVisible"
       class="ai-panel-content"
+      @mousedown="startPanelDrag"
     >
       <AIAssistant @close="hideAIPanel" />
     </div>
-  </div>
+  </Motion>
 </template>
 
 <style scoped>
@@ -190,7 +308,7 @@ onMounted(() => {
   width: 44px;
   height: 44px;
   background: rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(16px);
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 22px;
   transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
@@ -198,6 +316,11 @@ onMounted(() => {
     inset 0 1px 0 rgba(255, 255, 255, 0.1);
   cursor: pointer;
   overflow: hidden;
+
+  /* GPU acceleration */
+  transform: translateZ(0);
+  will-change: transform, backdrop-filter;
+  backface-visibility: hidden;
 }
 
 .ai-container:not(.expanded):hover:not(.dragging) {
@@ -213,6 +336,14 @@ onMounted(() => {
   transform: scale(1.1);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.15),
     inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.ai-container.expanded {
+  cursor: grab;
+}
+
+.ai-container.expanded:active {
+  cursor: grabbing;
 }
 
 .ai-container.expanded {
