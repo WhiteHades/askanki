@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, nextTick } from "vue";
 import { marked } from "marked";
 import { GoogleGenAI } from "@google/genai";
+import { Motion } from "motion-v";
 import {
   Cog6ToothIcon,
   TrashIcon,
