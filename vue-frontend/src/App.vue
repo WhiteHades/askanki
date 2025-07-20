@@ -5,15 +5,44 @@ import AIAssistant from "./components/AIAssistant.vue";
 
 const isVisible = ref(false);
 const isAnimating = ref(false);
+const isDragging = ref(false);
+const buttonPosition = ref({ x: window.innerWidth - 64, y: 20 });
+const originalButtonPosition = ref({ x: window.innerWidth - 64, y: 20 });
+const dragOffset = ref({ x: 0, y: 0 });
 
 const toggleAIPanel = () => {
-  if (isAnimating.value) return;
+  if (isAnimating.value || isDragging.value) return;
 
   isAnimating.value = true;
   isVisible.value = !isVisible.value;
   window.aiPanelVisible = isVisible.value;
 
   if (isVisible.value) {
+    // store original position before adjusting
+    originalButtonPosition.value = { ...buttonPosition.value };
+
+    // ensure panel stays within bounds
+    const panelWidth = Math.min(360, window.innerWidth * 0.28);
+    const panelHeight = window.innerHeight - 40;
+
+    // check if panel would overflow right edge
+    if (buttonPosition.value.x + panelWidth > window.innerWidth) {
+      buttonPosition.value.x = window.innerWidth - panelWidth - 20;
+    }
+
+    // check if panel would overflow bottom edge
+    if (buttonPosition.value.y + panelHeight > window.innerHeight) {
+      buttonPosition.value.y = window.innerHeight - panelHeight - 20;
+    }
+
+    // ensure minimum position from left and top edges
+    if (buttonPosition.value.x < 20) {
+      buttonPosition.value.x = 20;
+    }
+    if (buttonPosition.value.y < 20) {
+      buttonPosition.value.y = 20;
+    }
+
     setTimeout(() => {
       window.dispatchEvent(new CustomEvent("ai-panel-opened"));
     }, 150);
@@ -31,14 +60,91 @@ const hideAIPanel = () => {
   isVisible.value = false;
   window.aiPanelVisible = false;
 
+  // restore original button position when closing
+  buttonPosition.value = { ...originalButtonPosition.value };
+
   setTimeout(() => {
     isAnimating.value = false;
   }, 350);
 };
 
+const startDrag = (event) => {
+  if (isVisible.value || isAnimating.value) return;
+
+  isDragging.value = true;
+  const rect = event.currentTarget.getBoundingClientRect();
+  dragOffset.value = {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  };
+
+  document.addEventListener("mousemove", onDrag);
+  document.addEventListener("mouseup", stopDrag);
+  event.preventDefault();
+};
+
+const onDrag = (event) => {
+  if (!isDragging.value) return;
+
+  const newX = event.clientX - dragOffset.value.x;
+  const newY = event.clientY - dragOffset.value.y;
+
+  // keep button within viewport bounds
+  const maxX = window.innerWidth - 44;
+  const maxY = window.innerHeight - 44;
+
+  buttonPosition.value = {
+    x: Math.max(0, Math.min(newX, maxX)),
+    y: Math.max(0, Math.min(newY, maxY)),
+  };
+};
+
+const stopDrag = () => {
+  isDragging.value = false;
+  document.removeEventListener("mousemove", onDrag);
+  document.removeEventListener("mouseup", stopDrag);
+
+  // prevent click event from firing after drag
+  setTimeout(() => {
+    isDragging.value = false;
+  }, 10);
+};
+
 onMounted(() => {
   window.toggleAIPanel = toggleAIPanel;
   window.hideAIPanel = hideAIPanel;
+
+  // reset position when card changes (new session)
+  const resetPosition = () => {
+    buttonPosition.value = { x: window.innerWidth - 64, y: 20 };
+    originalButtonPosition.value = { x: window.innerWidth - 64, y: 20 };
+  };
+
+  // listen for card changes
+  window.addEventListener("beforeunload", resetPosition);
+  window.addEventListener("focus", resetPosition);
+
+  // handle window resize to keep panel in bounds
+  window.addEventListener("resize", () => {
+    if (isVisible.value) {
+      const panelWidth = Math.min(360, window.innerWidth * 0.28);
+      const panelHeight = window.innerHeight - 40;
+
+      // adjust position if panel would overflow after resize
+      if (buttonPosition.value.x + panelWidth > window.innerWidth) {
+        buttonPosition.value.x = window.innerWidth - panelWidth - 20;
+      }
+      if (buttonPosition.value.y + panelHeight > window.innerHeight) {
+        buttonPosition.value.y = window.innerHeight - panelHeight - 20;
+      }
+      if (buttonPosition.value.x < 20) {
+        buttonPosition.value.x = 20;
+      }
+      if (buttonPosition.value.y < 20) {
+        buttonPosition.value.y = 20;
+      }
+    }
+  });
 });
 </script>
 
@@ -48,13 +154,19 @@ onMounted(() => {
     :class="{
       expanded: isVisible,
       animating: isAnimating,
+      dragging: isDragging,
     }"
     class="ai-container"
+    :style="{
+      left: buttonPosition.x + 'px',
+      top: buttonPosition.y + 'px',
+    }"
   >
     <div
       v-if="!isVisible"
       class="ai-button-content"
       @click="toggleAIPanel"
+      @mousedown="startDrag"
     >
       <SparklesIcon class="ai-icon" />
     </div>
@@ -71,8 +183,6 @@ onMounted(() => {
 <style scoped>
 .ai-container {
   position: fixed;
-  top: 20px;
-  right: 20px;
   z-index: 1001;
   pointer-events: auto;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -90,11 +200,19 @@ onMounted(() => {
   overflow: hidden;
 }
 
-.ai-container:not(.expanded):hover {
+.ai-container:not(.expanded):hover:not(.dragging) {
   background: rgba(255, 255, 255, 0.15);
   transform: scale(1.05);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15), 0 4px 12px rgba(0, 0, 0, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.ai-container.dragging {
+  transition: none;
+  cursor: grabbing;
+  transform: scale(1.1);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2), 0 6px 16px rgba(0, 0, 0, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
 .ai-container.expanded {
@@ -105,7 +223,6 @@ onMounted(() => {
   background: rgba(20, 20, 20, 0.8);
   backdrop-filter: blur(40px) saturate(180%);
   border: 1px solid rgba(255, 255, 255, 0.1);
-
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.15),
     inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
@@ -118,10 +235,11 @@ onMounted(() => {
   height: 100%;
   color: rgba(255, 255, 255, 0.8);
   transition: all 0.3s ease;
-  cursor: pointer;
+  cursor: grab;
+  user-select: none;
 }
 
-.ai-container:not(.expanded):hover .ai-button-content {
+.ai-container:not(.expanded):hover:not(.dragging) .ai-button-content {
   color: rgba(255, 255, 255, 0.95);
   transform: scale(1.1);
 }

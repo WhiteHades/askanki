@@ -505,16 +505,17 @@ onMounted(() => {
           >
             <Cog6ToothIcon class="action-icon" />
           </button>
-          <button
-            @click="$emit('close')"
-            class="action-btn close-btn"
-            title="close"
-          >
-            <XMarkIcon class="action-icon" />
-          </button>
         </div>
       </transition>
     </div>
+
+    <button
+      @click="$emit('close')"
+      class="close-corner-btn"
+      title="close"
+    >
+      <XMarkIcon class="close-corner-icon" />
+    </button>
 
     <div
       class="messages"
@@ -592,7 +593,7 @@ onMounted(() => {
   flex-direction: column;
   font-family: BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   background: transparent;
-  font-size: 12px;
+  font-size: 14px;
   overflow: hidden;
   position: relative;
 }
@@ -756,6 +757,37 @@ onMounted(() => {
   background: rgba(220, 38, 38, 0.2);
   border-color: rgba(220, 38, 38, 0.4);
   color: rgba(255, 120, 120, 0.95);
+}
+
+.close-corner-btn {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  border-radius: 2px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 10;
+  backdrop-filter: blur(10px);
+}
+
+.close-corner-btn:hover {
+  background: rgba(220, 38, 38, 0.2);
+  border-color: rgba(220, 38, 38, 0.3);
+  color: rgba(255, 120, 120, 0.95);
+  transform: scale(1.05);
+}
+
+.close-corner-icon {
+  width: 6px;
+  height: 6px;
 }
 
 .action-icon {
@@ -1039,7 +1071,7 @@ onMounted(() => {
   background: none;
   border: none;
   color: white;
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.3;
   resize: none;
   outline: none;
