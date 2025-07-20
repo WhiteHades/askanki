@@ -761,33 +761,41 @@ onMounted(() => {
 
 .close-corner-btn {
   position: absolute;
-  top: -6px;
-  right: -6px;
+  top: 8px;
+  left: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 12px;
-  height: 12px;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  width: 22px;
+  height: 22px;
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  border-radius: 11px;
   color: rgba(255, 255, 255, 0.7);
   cursor: pointer;
-  border-radius: 2px;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   z-index: 10;
-  backdrop-filter: blur(10px);
+  flex-shrink: 0;
+  margin: 2px;
+  padding: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .close-corner-btn:hover {
   background: rgba(220, 38, 38, 0.2);
-  border-color: rgba(220, 38, 38, 0.3);
   color: rgba(255, 120, 120, 0.95);
   transform: scale(1.05);
 }
 
+.grok-chat:hover .close-corner-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .close-corner-icon {
-  width: 6px;
-  height: 6px;
+  width: 14px;
+  height: 14px;
 }
 
 .action-icon {
