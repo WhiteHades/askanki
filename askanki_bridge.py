@@ -5,6 +5,7 @@ import os
 import platform
 import queue
 import signal
+import stat
 import subprocess
 import threading
 import uuid
@@ -171,6 +172,13 @@ class SidecarClient:
                 return
             if not self.executable.is_file():
                 raise BridgeError("sidecar_unavailable", "the local AskAnki runtime is not installed")
+            if os.name != "nt":
+                try:
+                    mode = self.executable.stat().st_mode
+                    if not mode & stat.S_IXUSR:
+                        self.executable.chmod(mode | stat.S_IXUSR)
+                except OSError as error:
+                    raise BridgeError("sidecar_start_failed", "could not prepare the local AskAnki runtime") from error
             self.working_directory.mkdir(parents=True, exist_ok=True)
             args = [
                 str(self.executable),

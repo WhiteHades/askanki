@@ -1,6 +1,8 @@
 import io
 import itertools
 import json
+import os
+import stat
 import tempfile
 import threading
 import unittest
@@ -99,6 +101,8 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(completed_result(events), {"entries": []})
             process = client._process
             self.assertIsNotNone(process)
+            if os.name != "nt":
+                self.assertTrue(executable.stat().st_mode & stat.S_IXUSR)
             self.assertFalse(process.kwargs["shell"])
             self.assertIsInstance(process.args, list)
             sent = json.loads(process.stdin.getvalue().decode())

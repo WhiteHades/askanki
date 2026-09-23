@@ -8,6 +8,14 @@ It uses user-installed OpenCode and Codex CLIs rather than a hosted API. The cur
 
 The frontend and native runtime are built separately during the migration. See the local engineering specification and tickets for the current implementation phases.
 
+Build the local Linux add-on archive with:
+
+```sh
+python scripts/build_addon.py
+```
+
+The archive is written to `dist/` and contains the production frontend assets plus the Rust sidecar.
+
 ## License
 
 MIT. See `LICENSE`.
