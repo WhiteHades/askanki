@@ -1,5 +1,7 @@
 {
   "package": "askanki",
-  "name": "AI Card Explainer",
-  "version": "0.1"
+  "name": "AskAnki",
+  "version": "0.2.0",
+  "human_version": "0.2.0",
+  "min_point_version": 260801
 }
