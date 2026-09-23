@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +52,8 @@ SUPPORTED_CONTEXT_TYPES = (
 )
 _client: SidecarClient | None = None
 _client_signature: tuple[str, int, str, str] | None = None
+_agent_runs: dict[str, dict[str, Any]] = {}
+_agent_runs_lock = threading.Lock()
 
 
 def _addon_package() -> str:
@@ -204,6 +208,113 @@ def _call_sidecar(action: str, payload: dict[str, Any]) -> dict[str, Any]:
     return _ok(result)
 
 
+def _start_agent_run(payload: dict[str, Any]) -> dict[str, Any]:
+    client = _sidecar()
+    run_id = uuid.uuid4().hex
+    with _agent_runs_lock:
+        if any(run.get("status") == "running" for run in _agent_runs.values()):
+            raise BridgeError("agent_busy", "another local agent run is already active")
+        completed = [
+            key
+            for key, run in _agent_runs.items()
+            if run.get("note_id") == payload["note_id"] and run.get("status") != "running"
+        ]
+        for key in completed[:-8]:
+            _agent_runs.pop(key, None)
+        _agent_runs[run_id] = {
+            "run_id": run_id,
+            "note_id": payload["note_id"],
+            "status": "running",
+            "text": "",
+            "steps": [{"id": "agent", "label": "Start local agent", "status": "running"}],
+            "tools": [],
+            "error": None,
+        }
+    thread = threading.Thread(
+        target=_run_agent,
+        args=(run_id, payload, client),
+        name=f"askanki-agent-{run_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    return {"run_id": run_id, "status": "running"}
+
+
+def _run_agent(run_id: str, payload: dict[str, Any], client: SidecarClient) -> None:
+    events: list[dict[str, Any]] = []
+    try:
+        for event in client.stream("agent_run", payload):
+            events.append(event)
+            with _agent_runs_lock:
+                run = _agent_runs.get(run_id)
+                if run is None:
+                    return
+                if event.get("event") == "output" and isinstance(event.get("text"), str):
+                    run["text"] += event["text"]
+        result = completed_result(events)
+        error = error_result(events)
+        with _agent_runs_lock:
+            run = _agent_runs.get(run_id)
+            if run is None:
+                return
+            if result is not None:
+                result_text = result.get("text")
+                if isinstance(result_text, str) and not run["text"]:
+                    run["text"] = result_text
+                run["status"] = "completed"
+                run["steps"] = result.get("steps", run["steps"])
+                run["tools"] = result.get("tools", [])
+            elif error is not None:
+                run["status"] = "error"
+                run["error"] = error["message"]
+            elif any(event.get("event") == "cancelled" for event in events):
+                run["status"] = "cancelled"
+            else:
+                run["status"] = "error"
+                run["error"] = "The local agent stopped without a result."
+    except BridgeError as error:
+        with _agent_runs_lock:
+            run = _agent_runs.get(run_id)
+            if run is not None:
+                run["status"] = "error"
+                run["error"] = str(error)
+    except Exception:
+        with _agent_runs_lock:
+            run = _agent_runs.get(run_id)
+            if run is not None:
+                run["status"] = "error"
+                run["error"] = "The local agent run failed."
+
+
+def _poll_agent_run(request_payload: dict[str, Any], context: Any) -> dict[str, Any]:
+    note_id = _context_note(request_payload, context)
+    run_id = request_payload.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        raise BridgeError("invalid_agent_run", "run_id is required")
+    cursor = request_payload.get("cursor", 0)
+    if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+        raise BridgeError("invalid_agent_cursor", "cursor must be a non-negative integer")
+    with _agent_runs_lock:
+        run = _agent_runs.get(run_id)
+        if run is None or run.get("note_id") != note_id:
+            raise BridgeError("agent_run_not_found", "the local agent run is no longer available")
+        text = run.get("text", "")
+        if not isinstance(text, str):
+            text = ""
+        cursor = min(cursor, len(text))
+        result = {
+            "run_id": run_id,
+            "status": run["status"],
+            "text": text[cursor:],
+            "cursor": len(text),
+            "steps": run.get("steps", []),
+            "tools": run.get("tools", []),
+        }
+        if run.get("error"):
+            result["error"] = run["error"]
+        return _ok(result)
+
+
 def _dispatch(payload: Any, context: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return _error("invalid_request", "request must be an object")
@@ -242,7 +353,15 @@ def _dispatch(payload: Any, context: Any) -> dict[str, Any]:
                 raise BridgeError("invalid_agent_payload", "agent request exceeds the maximum size")
         except BridgeError as error:
             return _error(error.code, str(error))
-        return _call_sidecar("agent_run", payload)
+        try:
+            return _ok(_start_agent_run(payload))
+        except BridgeError as error:
+            return _error(error.code, str(error))
+    if action == "agent_poll":
+        try:
+            return _poll_agent_run(request_payload, context)
+        except BridgeError as error:
+            return _error(error.code, str(error))
     if action == "agent_cancel":
         try:
             note_id = _context_note(request_payload, context)

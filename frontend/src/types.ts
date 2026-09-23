@@ -46,3 +46,18 @@ export type AgentRunResult = {
   steps?: RunStep[]
   tools?: Array<{ id: string; label: string; detail?: string; status: RunStep['status'] }>
 }
+
+export type AgentRunStart = {
+  run_id: string
+  status: 'running'
+}
+
+export type AgentRunPoll = {
+  run_id: string
+  status: 'running' | 'completed' | 'cancelled' | 'error'
+  text: string
+  cursor: number
+  steps?: RunStep[]
+  tools?: Array<{ id: string; label: string; detail?: string; status: RunStep['status'] }>
+  error?: string
+}

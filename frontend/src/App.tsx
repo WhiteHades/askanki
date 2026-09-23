@@ -7,12 +7,16 @@ import { Button } from '@/components/ui/button'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { callBridge, getRuntimeConfig, hasBridge } from '@/lib/bridge'
 import { getCardContext, observeCardContext } from '@/lib/card-context'
-import type { AgentRunResult, CardContext, ChatMessage, HistoryEntry, RunState, RunStep, RuntimeConfig } from '@/types'
+import type { AgentRunPoll, AgentRunResult, AgentRunStart, CardContext, ChatMessage, HistoryEntry, RunState, RunStep, RuntimeConfig } from '@/types'
 
 const emptyCard: CardContext = { noteId: null, text: '', imageCount: 0, hasImages: false, hasMath: false, hasCode: false }
 
 function messageId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function wait(milliseconds: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 }
 
 function App() {
@@ -83,21 +87,42 @@ function App() {
     setError(undefined)
     setRunState('starting')
     setSteps([{ id: 'context', label: 'Read current card context', status: 'succeeded' }, { id: 'agent', label: `Start ${config?.provider === 'codex' ? 'Codex' : 'OpenCode'}`, status: 'running' }])
+    const assistantId = messageId()
+    setMessages((current) => [...current, { id: assistantId, role: 'assistant', content: '', createdAt: Date.now(), streaming: true }])
     try {
       await callBridge('history_append', { note_id: noteId, role: 'user', content: prompt })
-      const result = await callBridge<AgentRunResult>('agent_run', { note_id: noteId, prompt, card_context: card, history: messages, provider: config?.provider, workspace: config?.workspace })
-      if (result.cancelled) {
-        setSteps([{ id: 'agent', label: 'Run cancelled', status: 'cancelled' }])
-        return
+      const started = await callBridge<AgentRunStart>('agent_run', { note_id: noteId, prompt, card_context: card, history: messages, provider: config?.provider, workspace: config?.workspace })
+      setRunState('running')
+      let cursor = 0
+      let content = ''
+      while (true) {
+        const poll = await callBridge<AgentRunPoll>('agent_poll', { note_id: noteId, run_id: started.run_id, cursor })
+        if (poll.text) {
+          content += poll.text
+          setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content } : message))
+        }
+        if (poll.steps) setSteps(poll.steps)
+        if (poll.tools) setTools(poll.tools)
+        cursor = poll.cursor
+        if (poll.status === 'completed') {
+          setSteps(poll.steps ?? [{ id: 'agent', label: 'Local agent finished', status: 'succeeded' }])
+          setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content, streaming: false } : message))
+          if (content) await callBridge('history_append', { note_id: noteId, role: 'assistant', content })
+          break
+        }
+        if (poll.status === 'cancelled') {
+          setSteps([{ id: 'agent', label: 'Run cancelled', status: 'cancelled' }])
+          setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, streaming: false } : message))
+          break
+        }
+        if (poll.status === 'error') throw new Error(poll.error ?? 'The local agent could not complete this run.')
+        await wait(100)
       }
-      setSteps(result.steps ?? [{ id: 'agent', label: 'Local agent finished', status: 'succeeded' }])
-      setTools(result.tools ?? [])
-      setMessages((current) => [...current, { id: messageId(), role: 'assistant', content: result.text, createdAt: Date.now() }])
-      await callBridge('history_append', { note_id: noteId, role: 'assistant', content: result.text })
     } catch (runError) {
       const message = runError instanceof Error ? runError.message : 'The local agent could not complete this run.'
       setError(message)
       setSteps([{ id: 'agent', label: 'Run failed', detail: 'Review the runtime message', status: 'failed' }])
+      setMessages((current) => current.map((item) => item.id === assistantId ? { ...item, content: item.content || 'The local agent could not start.', streaming: false } : item))
     } finally {
       setRunState('idle')
     }

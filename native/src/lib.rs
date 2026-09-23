@@ -591,7 +591,10 @@ fn agent_command(provider: &str, prompt: &str, workspace: &Path) -> Result<Comma
     let mut command = match provider {
         "opencode" => {
             let mut command = Command::new("opencode");
-            command.arg("run").arg("--format").arg("json");
+            command.arg("run").arg("--format").arg("json").env(
+                "OPENCODE_CONFIG_CONTENT",
+                r#"{"permission":{"*":"deny","read":"allow","glob":"allow","grep":"allow"}}"#,
+            );
             if workspace != std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")) {
                 command.arg("--dir").arg(workspace);
             }
