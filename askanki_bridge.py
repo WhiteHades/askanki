@@ -28,8 +28,11 @@ MAX_ID_LENGTH = 128
 MAX_TEXT_LENGTH = 65_536
 MAX_WORKSPACE_LENGTH = 4_096
 MAX_INSTRUCTION_LENGTH = 16_384
+MAX_AGENT_HISTORY_ENTRIES = 8
+MAX_AGENT_PAYLOAD_BYTES = 524_288
 MAX_EVENT_BYTES = 1_048_576
 REQUEST_TIMEOUT_SECONDS = 10.0
+AGENT_REQUEST_TIMEOUT_SECONDS = 130.0
 TERMINAL_EVENTS = frozenset({"completed", "cancelled", "error", "approval_required"})
 
 
@@ -53,7 +56,11 @@ def clean_config(raw: Mapping[str, Any] | None) -> dict[str, Any]:
         provider = DEFAULT_CONFIG["provider"]
 
     workspace = source.get("workspace", DEFAULT_CONFIG["workspace"])
-    if not isinstance(workspace, str) or _byte_length(workspace) > MAX_WORKSPACE_LENGTH:
+    if (
+        not isinstance(workspace, str)
+        or _byte_length(workspace) > MAX_WORKSPACE_LENGTH
+        or "\x00" in workspace
+    ):
         workspace = DEFAULT_CONFIG["workspace"]
 
     retention = source.get(
@@ -99,6 +106,39 @@ def validate_text(value: Any) -> str:
     return value
 
 
+def _clean_card_context(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise BridgeError("invalid_card_context", "card context must be an object")
+    text = validate_text(value.get("text", ""))
+    image_count = value.get("image_count", 0)
+    if isinstance(image_count, bool) or not isinstance(image_count, int) or not 0 <= image_count <= 100:
+        raise BridgeError("invalid_card_context", "card image count is invalid")
+    result: dict[str, Any] = {"text": text, "image_count": image_count}
+    for key in ("has_images", "has_math", "has_code"):
+        flag = value.get(key, False)
+        if not isinstance(flag, bool):
+            raise BridgeError("invalid_card_context", "card context flags are invalid")
+        result[key] = flag
+    return result
+
+
+def _clean_agent_history(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list) or len(value) > MAX_AGENT_HISTORY_ENTRIES:
+        raise BridgeError("invalid_agent_history", "agent history is invalid")
+    result: list[dict[str, str]] = []
+    total = 0
+    for entry in value:
+        if not isinstance(entry, Mapping):
+            raise BridgeError("invalid_agent_history", "agent history entries must be objects")
+        role = validate_role(entry.get("role"))
+        content = validate_text(entry.get("content"))
+        total += _byte_length(content)
+        result.append({"role": role, "content": content})
+    if total > MAX_AGENT_PAYLOAD_BYTES:
+        raise BridgeError("invalid_agent_history", "agent history exceeds the maximum size")
+    return result
+
+
 class SidecarClient:
     def __init__(
         self,
@@ -117,8 +157,12 @@ class SidecarClient:
         self._request_id_factory = request_id_factory or (lambda: uuid.uuid4().hex)
         self._process: Any = None
         self._events: queue.Queue[bytes | None | BaseException] = queue.Queue()
+        self._request_queues: dict[str, queue.Queue[bytes | None | BaseException]] = {}
+        self._pending_events: dict[str, list[bytes]] = {}
         self._reader_thread: threading.Thread | None = None
+        self._dispatcher_thread: threading.Thread | None = None
         self._state_lock = threading.RLock()
+        self._events_lock = threading.Lock()
         self._io_lock = threading.Lock()
 
     def start(self) -> None:
@@ -150,12 +194,21 @@ class SidecarClient:
                 process = self._popen_factory(args, **kwargs)
                 self._process = process
                 self._events = queue.Queue()
+                with self._events_lock:
+                    self._request_queues = {}
+                    self._pending_events = {}
                 self._reader_thread = threading.Thread(
                     target=self._read_events,
                     args=(process, self._events),
                     daemon=True,
                 )
+                self._dispatcher_thread = threading.Thread(
+                    target=self._dispatch_events,
+                    args=(process, self._events),
+                    daemon=True,
+                )
                 self._reader_thread.start()
+                self._dispatcher_thread.start()
             except OSError as error:
                 raise BridgeError(
                     "sidecar_start_failed",
@@ -177,19 +230,25 @@ class SidecarClient:
                 "payload": dict(payload or {}),
             }
             encoded_request = (json.dumps(request, separators=(",", ":")) + "\n").encode()
+            events: queue.Queue[bytes | None | BaseException] = queue.Queue()
+            with self._events_lock:
+                self._request_queues[request_id] = events
+                for line in self._pending_events.pop(request_id, []):
+                    events.put(line)
             try:
                 assert process.stdin is not None
                 process.stdin.write(encoded_request)
                 process.stdin.flush()
             except (BrokenPipeError, OSError, ValueError) as error:
+                self._remove_request(request_id)
                 self._invalidate(process)
                 raise BridgeError("sidecar_write_failed", "could not send to the local AskAnki runtime") from error
 
-            with self._state_lock:
-                events = self._events
+        timeout = AGENT_REQUEST_TIMEOUT_SECONDS if action == "agent_run" else REQUEST_TIMEOUT_SECONDS
+        try:
             while True:
                 try:
-                    line = events.get(timeout=REQUEST_TIMEOUT_SECONDS)
+                    line = events.get(timeout=timeout)
                 except queue.Empty as error:
                     self._invalidate(process)
                     raise BridgeError("sidecar_timeout", "the local AskAnki runtime timed out") from error
@@ -217,9 +276,50 @@ class SidecarClient:
                 yield event
                 if event["event"] in TERMINAL_EVENTS:
                     return
+        finally:
+            self._remove_request(request_id)
 
     def request(self, action: str, payload: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         return list(self.stream(action, payload))
+
+    def _remove_request(self, request_id: str) -> None:
+        with self._events_lock:
+            self._request_queues.pop(request_id, None)
+
+    def _broadcast(self, message: bytes | None | BaseException) -> None:
+        with self._events_lock:
+            queues = list(self._request_queues.values())
+        for events in queues:
+            events.put(message)
+
+    def _dispatch_events(
+        self,
+        process: Any,
+        events: queue.Queue[bytes | None | BaseException],
+    ) -> None:
+        while True:
+            line = events.get()
+            if line is None or line == b"" or isinstance(line, BaseException):
+                self._broadcast(line)
+                return
+            try:
+                event = json.loads(line.decode("utf-8"))
+                request_id = event.get("request_id") if isinstance(event, dict) else None
+                if not isinstance(request_id, str):
+                    raise ValueError("event has no request id")
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+                self._broadcast(RuntimeError(error))
+                return
+            with self._events_lock:
+                request_queue = self._request_queues.get(request_id)
+            if request_queue is not None:
+                request_queue.put(line)
+            else:
+                with self._events_lock:
+                    self._pending_events.setdefault(request_id, []).append(line)
+            if process.poll() is not None and events.empty():
+                self._broadcast(None)
+                return
 
     @staticmethod
     def _read_events(
@@ -241,6 +341,10 @@ class SidecarClient:
             process = self._process
             self._process = None
             self._reader_thread = None
+            self._dispatcher_thread = None
+            self._broadcast(None)
+            with self._events_lock:
+                self._request_queues = {}
             self._events = queue.Queue()
         if process is None or process.poll() is not None:
             return
@@ -275,6 +379,7 @@ class SidecarClient:
         with self._state_lock:
             if self._process is process:
                 self._process = None
+        self._broadcast(None)
         self._terminate(process)
 
     @staticmethod

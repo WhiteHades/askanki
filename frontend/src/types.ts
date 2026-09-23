@@ -42,6 +42,7 @@ export type RunState = 'idle' | 'starting' | 'running' | 'waiting-approval' | 's
 
 export type AgentRunResult = {
   text: string
+  cancelled?: boolean
   steps?: RunStep[]
   tools?: Array<{ id: string; label: string; detail?: string; status: RunStep['status'] }>
 }

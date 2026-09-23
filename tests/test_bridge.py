@@ -1,12 +1,16 @@
 import io
+import itertools
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 from askanki_bridge import (
     BridgeError,
     SidecarClient,
+    _clean_agent_history,
+    _clean_card_context,
     clean_config,
     completed_result,
     error_result,
@@ -67,6 +71,17 @@ class BridgeTests(unittest.TestCase):
         with self.assertRaises(BridgeError):
             validate_text("é" * 65_537)
 
+    def test_agent_payload_helpers_bound_card_context_and_history(self):
+        card = _clean_card_context({"text": "hola", "image_count": 1, "has_images": True})
+        history = _clean_agent_history([{"role": "user", "content": "hola"}])
+
+        self.assertEqual(card["text"], "hola")
+        self.assertEqual(history, [{"role": "user", "content": "hola"}])
+        with self.assertRaises(BridgeError):
+            _clean_card_context({"image_count": -1})
+        with self.assertRaises(BridgeError):
+            _clean_agent_history([{"role": "user", "content": "x"}] * 9)
+
     def test_sidecar_request_uses_argument_array_without_shell(self):
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "askanki-core"
@@ -90,6 +105,45 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(sent["action"], "history_load")
             self.assertEqual(sent["payload"], {"note_id": "note-1"})
             self.assertEqual(process.kwargs["cwd"], str(client.working_directory))
+
+    def test_concurrent_requests_are_routed_to_their_own_event_streams(self):
+        class RoutedProcess(FakeProcess):
+            def __init__(self, args, **kwargs):
+                super().__init__(args, **kwargs)
+                self.stdout = io.BytesIO(
+                    b'{"event":"accepted","protocol":1,"request_id":"r0"}\n'
+                    b'{"event":"completed","request_id":"r0","result":{"value":0}}\n'
+                    b'{"event":"accepted","protocol":1,"request_id":"r1"}\n'
+                    b'{"event":"completed","request_id":"r1","result":{"value":1}}\n'
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "askanki-core"
+            executable.touch()
+            ids = itertools.count()
+            client = SidecarClient(
+                executable=executable,
+                history_path=Path(directory) / "history.jsonl",
+                retention_days=30,
+                popen_factory=RoutedProcess,
+                request_id_factory=lambda: f"r{next(ids)}",
+            )
+            barrier = threading.Barrier(2)
+            results = {}
+
+            def request(index):
+                barrier.wait()
+                results[index] = client.request("ping")
+
+            threads = [threading.Thread(target=request, args=(index,)) for index in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=2)
+
+            values = {completed_result(result)["value"] for result in results.values()}
+            self.assertEqual(values, {0, 1})
+            client.close()
 
     def test_error_result_preserves_protocol_error(self):
         result = error_result(

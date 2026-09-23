@@ -86,6 +86,10 @@ function App() {
     try {
       await callBridge('history_append', { note_id: noteId, role: 'user', content: prompt })
       const result = await callBridge<AgentRunResult>('agent_run', { note_id: noteId, prompt, card_context: card, history: messages, provider: config?.provider, workspace: config?.workspace })
+      if (result.cancelled) {
+        setSteps([{ id: 'agent', label: 'Run cancelled', status: 'cancelled' }])
+        return
+      }
       setSteps(result.steps ?? [{ id: 'agent', label: 'Local agent finished', status: 'succeeded' }])
       setTools(result.tools ?? [])
       setMessages((current) => [...current, { id: messageId(), role: 'assistant', content: result.text, createdAt: Date.now() }])
@@ -106,7 +110,6 @@ function App() {
       await callBridge('agent_cancel', { note_id: noteId })
     } catch (stopError) {
       setError(stopError instanceof Error ? stopError.message : 'Could not stop the local run.')
-    } finally {
       setRunState('idle')
     }
   }, [noteId, runState])

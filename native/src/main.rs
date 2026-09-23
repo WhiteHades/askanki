@@ -1,6 +1,9 @@
 use std::env;
 use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use askanki_core::{DEFAULT_RETENTION_DAYS, Event, MAX_REQUEST_BYTES, Runtime};
 
@@ -8,6 +11,7 @@ enum InputLine {
     Eof,
     Line(String),
     TooLarge,
+    Error(String),
 }
 
 fn main() -> io::Result<()> {
@@ -22,31 +26,41 @@ fn main() -> io::Result<()> {
             return Ok(());
         }
     };
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
+    let (input_sender, input_receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let stdin = io::stdin();
+        let mut reader = stdin.lock();
+        loop {
+            let input = match read_input_line(&mut reader) {
+                Ok(input) => input,
+                Err(error) => InputLine::Error(error.to_string()),
+            };
+            let terminal =
+                matches!(input, InputLine::Eof | InputLine::TooLarge | InputLine::Error(_));
+            if input_sender.send(input).is_err() || terminal {
+                return;
+            }
+        }
+    });
+    let (event_sender, event_receiver) = mpsc::channel();
     let stdout = io::stdout();
     let mut writer = stdout.lock();
+    let mut shutdown = false;
+    let mut input_closed = false;
 
-    loop {
-        let input = match read_input_line(&mut reader) {
-            Ok(input) => input,
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-                write_event_to(
-                    &mut writer,
-                    &Event::Error {
-                        request_id: "unknown".to_owned(),
-                        code: "invalid_utf8".to_owned(),
-                        message: "request is not valid UTF-8".to_owned(),
-                    },
-                )?;
+    while !shutdown {
+        match input_receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(InputLine::Line(line)) => {
+                let events = runtime.process_line_with_sender(line.trim_end(), &event_sender);
+                let should_shutdown = events.iter().any(Event::is_shutdown);
+                for event in events {
+                    write_event_to(&mut writer, &event)?;
+                }
                 writer.flush()?;
-                break;
+                shutdown = should_shutdown;
             }
-            Err(error) => return Err(error),
-        };
-        match input {
-            InputLine::Eof => break,
-            InputLine::TooLarge => {
+            Ok(InputLine::Eof) => input_closed = true,
+            Ok(InputLine::TooLarge) => {
                 write_event_to(
                     &mut writer,
                     &Event::Error {
@@ -56,22 +70,47 @@ fn main() -> io::Result<()> {
                     },
                 )?;
                 writer.flush()?;
-                break;
+                shutdown = true;
             }
-            InputLine::Line(line) => {
-                let events = runtime.process_line(line.trim_end());
-                let shutdown = events.iter().any(Event::is_shutdown);
-                for event in events {
-                    write_event_to(&mut writer, &event)?;
-                }
+            Ok(InputLine::Error(message)) => {
+                write_event_to(
+                    &mut writer,
+                    &Event::Error {
+                        request_id: "unknown".to_owned(),
+                        code: "invalid_input".to_owned(),
+                        message,
+                    },
+                )?;
                 writer.flush()?;
-                if shutdown {
-                    break;
+                shutdown = true;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                input_closed = true;
+                if !runtime.has_active_runs() {
+                    shutdown = true;
+                } else {
+                    thread::sleep(Duration::from_millis(10));
                 }
             }
         }
+        loop {
+            match event_receiver.try_recv() {
+                Ok(event) => {
+                    let should_shutdown = event.is_shutdown();
+                    write_event_to(&mut writer, &event)?;
+                    writer.flush()?;
+                    shutdown |= should_shutdown;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => break,
+            }
+        }
+        if input_closed && !runtime.has_active_runs() {
+            shutdown = true;
+        }
     }
-
+    runtime.cancel_all();
     Ok(())
 }
 

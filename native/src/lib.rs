@@ -1,6 +1,15 @@
+use std::collections::HashMap;
 use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -16,6 +25,12 @@ const MAX_HISTORY_ENTRIES: usize = 10_000;
 const MAX_HISTORY_LOAD_ENTRIES: usize = 8;
 const MAX_HISTORY_EVENT_BYTES: usize = 512 * 1_024;
 const MAX_HISTORY_BYTES: u64 = 8 * 1_048_576;
+const MAX_AGENT_EVENT_BYTES: usize = 1_048_576;
+const MAX_AGENT_OUTPUT_BYTES: usize = 4 * 1_048_576;
+const MAX_AGENT_HISTORY_ENTRIES: usize = 8;
+const MAX_WORKSPACE_BYTES: usize = 4_096;
+const AGENT_TIMEOUT: Duration = Duration::from_secs(120);
+const AGENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub const DEFAULT_RETENTION_DAYS: u64 = 30;
 
 #[derive(Debug, Deserialize)]
@@ -28,7 +43,7 @@ pub struct Request {
     pub payload: Value,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Serialize, PartialEq, Clone)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
     Accepted { protocol: u16, request_id: String },
@@ -70,6 +85,30 @@ struct HistoryAppendPayload {
     note_id: String,
     role: String,
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentRunPayload {
+    note_id: String,
+    prompt: String,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    auto_fallback: bool,
+    #[serde(default)]
+    workspace: String,
+    #[serde(default)]
+    system_instruction: String,
+    #[serde(default)]
+    card_context: Value,
+    #[serde(default)]
+    history: Vec<Value>,
+}
+
+#[derive(Clone)]
+struct ActiveRun {
+    note_id: String,
+    cancel: Arc<AtomicBool>,
 }
 
 struct HistoryStore {
@@ -230,19 +269,37 @@ impl HistoryStore {
     }
 }
 
-#[derive(Default)]
 pub struct Runtime {
     history: Option<HistoryStore>,
+    active_runs: Arc<Mutex<HashMap<String, ActiveRun>>>,
+}
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self { history: None, active_runs: Arc::new(Mutex::new(HashMap::new())) }
+    }
 }
 
 impl Runtime {
     pub fn new(history_path: Option<PathBuf>, retention_days: u64) -> Result<Self, String> {
         let history =
             history_path.map(|path| HistoryStore::new(path, retention_days)).transpose()?;
-        Ok(Self { history })
+        Ok(Self { history, active_runs: Arc::new(Mutex::new(HashMap::new())) })
     }
 
     pub fn process_line(&mut self, line: &str) -> Vec<Event> {
+        let (sender, receiver) = mpsc::channel();
+        let mut events = self.process_line_with_sender(line, &sender);
+        drop(sender);
+        events.extend(receiver.iter());
+        events
+    }
+
+    pub fn process_line_with_sender(
+        &mut self,
+        line: &str,
+        sender: &mpsc::Sender<Event>,
+    ) -> Vec<Event> {
         if line.len() > MAX_REQUEST_BYTES {
             return vec![error_event(
                 "unknown",
@@ -250,14 +307,173 @@ impl Runtime {
                 "request exceeds the maximum size",
             )];
         }
-        match serde_json::from_str::<Request>(line) {
-            Ok(request) => process_request_with_history(request, self.history.as_mut()),
-            Err(error) => vec![error_event(
-                "unknown",
-                "invalid_json",
-                &format!("could not parse request: {error}"),
-            )],
+        let request = match serde_json::from_str::<Request>(line) {
+            Ok(request) => request,
+            Err(error) => {
+                return vec![error_event(
+                    "unknown",
+                    "invalid_json",
+                    &format!("could not parse request: {error}"),
+                )];
+            }
+        };
+        if request.action == "agent_run" {
+            return self.start_agent(request, sender);
         }
+        if request.action == "agent_cancel" {
+            return self.cancel_agent(request);
+        }
+        process_request_with_history(request, self.history.as_mut())
+    }
+
+    fn start_agent(&mut self, request: Request, sender: &mpsc::Sender<Event>) -> Vec<Event> {
+        let request_id = request.request_id;
+        if request.protocol != PROTOCOL_VERSION {
+            return vec![error_event(
+                &request_id,
+                "unsupported_protocol",
+                "unsupported protocol version",
+            )];
+        }
+        if request_id.is_empty() || request_id.len() > MAX_ID_BYTES {
+            return vec![error_event(
+                "unknown",
+                "invalid_request_id",
+                "request_id must be between 1 and 128 bytes",
+            )];
+        }
+        let accepted =
+            Event::Accepted { protocol: PROTOCOL_VERSION, request_id: request_id.clone() };
+        let payload: AgentRunPayload = match serde_json::from_value(request.payload) {
+            Ok(payload) => payload,
+            Err(error) => {
+                return vec![
+                    accepted,
+                    error_event(
+                        &request_id,
+                        "invalid_agent_payload",
+                        &format!("could not parse agent payload: {error}"),
+                    ),
+                ];
+            }
+        };
+        if let Err(error) = validate_agent_payload(&payload) {
+            return vec![accepted, error_event(&request_id, "invalid_agent_payload", &error)];
+        }
+        {
+            let runs = self.active_runs.lock().expect("agent run lock poisoned");
+            if !runs.is_empty() {
+                return vec![
+                    accepted,
+                    error_event(
+                        &request_id,
+                        "agent_busy",
+                        "another local agent run is already active",
+                    ),
+                ];
+            }
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let active = ActiveRun { note_id: payload.note_id.clone(), cancel: cancel.clone() };
+        self.active_runs
+            .lock()
+            .expect("agent run lock poisoned")
+            .insert(request_id.clone(), active);
+        let runs = self.active_runs.clone();
+        let sender = sender.clone();
+        let provider = payload.provider.clone().unwrap_or_else(|| "opencode".to_owned());
+        thread::spawn(move || {
+            let result = run_agent(&request_id, &payload, &provider, cancel.clone(), &sender);
+            if let Ok(mut active) = runs.lock() {
+                active.remove(&request_id);
+            }
+            match result {
+                Ok(AgentRunOutcome::Completed { text, provider, emitted_output }) => {
+                    if !emitted_output {
+                        let _ = sender.send(Event::Output {
+                            request_id: request_id.clone(),
+                            text: text.clone(),
+                        });
+                    }
+                    let _ = sender.send(Event::Completed {
+                        request_id: request_id.clone(),
+                        result: json!({
+                            "text": text,
+                            "provider": provider,
+                            "steps": [{"id": "agent", "label": "Local agent finished", "status": "succeeded"}],
+                            "tools": []
+                        }),
+                    });
+                }
+                Ok(AgentRunOutcome::Cancelled) => {
+                    let _ = sender.send(Event::Cancelled { request_id: request_id.clone() });
+                }
+                Err(error) => {
+                    let _ = sender.send(error_event(&request_id, &error.code, &error.message));
+                }
+            }
+        });
+        vec![accepted]
+    }
+
+    fn cancel_agent(&mut self, request: Request) -> Vec<Event> {
+        let request_id = request.request_id;
+        if request.protocol != PROTOCOL_VERSION {
+            return vec![error_event(
+                &request_id,
+                "unsupported_protocol",
+                "unsupported protocol version",
+            )];
+        }
+        let accepted =
+            Event::Accepted { protocol: PROTOCOL_VERSION, request_id: request_id.clone() };
+        let note_id = match serde_json::from_value::<NotePayload>(request.payload) {
+            Ok(payload) if validate_note_id(&payload.note_id).is_ok() => payload.note_id,
+            Ok(_) => {
+                return vec![
+                    accepted,
+                    error_event(
+                        &request_id,
+                        "invalid_agent_payload",
+                        "note_id must be between 1 and 128 bytes",
+                    ),
+                ];
+            }
+            Err(error) => {
+                return vec![
+                    accepted,
+                    error_event(
+                        &request_id,
+                        "invalid_agent_payload",
+                        &format!("could not parse cancel payload: {error}"),
+                    ),
+                ];
+            }
+        };
+        let cancelled = self
+            .active_runs
+            .lock()
+            .expect("agent run lock poisoned")
+            .values()
+            .find(|run| run.note_id == note_id)
+            .map(|run| {
+                run.cancel.store(true, Ordering::SeqCst);
+                true
+            })
+            .unwrap_or(false);
+        vec![accepted, Event::Completed { request_id, result: json!({"cancelled": cancelled}) }]
+    }
+
+    pub fn cancel_all(&self) {
+        if let Ok(runs) = self.active_runs.lock() {
+            for run in runs.values() {
+                run.cancel.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    pub fn has_active_runs(&self) -> bool {
+        self.active_runs.lock().map(|runs| !runs.is_empty()).unwrap_or(false)
     }
 }
 
@@ -267,6 +483,384 @@ pub fn process_line(line: &str) -> Vec<Event> {
 
 pub fn process_request(request: Request) -> Vec<Event> {
     process_request_with_history(request, None)
+}
+
+struct AgentError {
+    code: String,
+    message: String,
+}
+
+enum AgentRunOutcome {
+    Completed { text: String, provider: String, emitted_output: bool },
+    Cancelled,
+}
+
+fn agent_error(code: &str, message: impl Into<String>) -> AgentError {
+    AgentError { code: code.to_owned(), message: message.into() }
+}
+
+fn validate_agent_payload(payload: &AgentRunPayload) -> Result<(), String> {
+    validate_note_id(&payload.note_id)?;
+    validate_text(&payload.prompt)?;
+    if payload.prompt.contains('\0') {
+        return Err("agent prompt contains an invalid null byte".to_owned());
+    }
+    if payload.workspace.len() > MAX_WORKSPACE_BYTES || payload.workspace.contains('\0') {
+        return Err("agent workspace is invalid".to_owned());
+    }
+    if payload
+        .provider
+        .as_deref()
+        .is_some_and(|provider| provider != "opencode" && provider != "codex")
+    {
+        return Err("unsupported local agent".to_owned());
+    }
+    if payload.system_instruction.len() > MAX_TEXT_BYTES {
+        return Err("agent instruction exceeds the maximum size".to_owned());
+    }
+    if payload.history.len() > MAX_AGENT_HISTORY_ENTRIES {
+        return Err("agent history exceeds the maximum number of entries".to_owned());
+    }
+    if !payload.card_context.is_null() && !payload.card_context.is_object() {
+        return Err("card context must be an object".to_owned());
+    }
+    let mut total = payload.prompt.len() + payload.system_instruction.len();
+    for entry in &payload.history {
+        let role =
+            entry.get("role").and_then(Value::as_str).ok_or("history entry role is missing")?;
+        let content = entry
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or("history entry content is missing")?;
+        validate_role(role)?;
+        validate_text(content)?;
+        total = total.saturating_add(content.len());
+    }
+    if let Some(text) = payload.card_context.get("text").and_then(Value::as_str) {
+        validate_text(text)?;
+        total = total.saturating_add(text.len());
+    }
+    if total > MAX_AGENT_OUTPUT_BYTES {
+        return Err("agent request exceeds the maximum size".to_owned());
+    }
+    Ok(())
+}
+
+fn agent_workspace(workspace: &str) -> Result<PathBuf, AgentError> {
+    let path = if workspace.trim().is_empty() {
+        std::env::current_dir().map_err(|_| {
+            agent_error("agent_workspace_unavailable", "the current workspace is unavailable")
+        })?
+    } else {
+        PathBuf::from(workspace)
+    };
+    if !path.is_dir() {
+        return Err(agent_error(
+            "agent_workspace_unavailable",
+            "the selected workspace is not a directory",
+        ));
+    }
+    Ok(path)
+}
+
+fn build_agent_prompt(payload: &AgentRunPayload) -> String {
+    let mut prompt = String::new();
+    if !payload.system_instruction.trim().is_empty() {
+        prompt.push_str("System instruction:\n");
+        prompt.push_str(&payload.system_instruction);
+        prompt.push_str("\n\n");
+    }
+    prompt.push_str("Current Anki card:\n");
+    let card_text = payload
+        .card_context
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("No card text is available.");
+    prompt.push_str(card_text);
+    prompt.push_str("\n\nConversation:\n");
+    for entry in &payload.history {
+        let role = entry.get("role").and_then(Value::as_str).unwrap_or("user");
+        let content = entry.get("content").and_then(Value::as_str).unwrap_or("");
+        prompt.push_str(&format!("{}: {}\n", role, content));
+    }
+    prompt.push_str(&format!("user: {}", payload.prompt));
+    prompt
+}
+
+fn agent_command(provider: &str, prompt: &str, workspace: &Path) -> Result<Command, AgentError> {
+    let mut command = match provider {
+        "opencode" => {
+            let mut command = Command::new("opencode");
+            command.arg("run").arg("--format").arg("json");
+            if workspace != std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")) {
+                command.arg("--dir").arg(workspace);
+            }
+            command.arg(prompt);
+            command
+        }
+        "codex" => {
+            let mut command = Command::new("codex");
+            command.arg("exec").arg("--json").arg("--sandbox").arg("read-only");
+            if workspace != std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")) {
+                command.arg("--cd").arg(workspace);
+            }
+            command
+        }
+        _ => return Err(agent_error("invalid_agent_provider", "unsupported local agent")),
+    };
+    command
+        .current_dir(workspace)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
+    Ok(command)
+}
+
+fn send_agent_output(
+    sender: &mpsc::Sender<Event>,
+    request_id: &str,
+    text: &str,
+    output: &mut String,
+    emitted_output: &mut bool,
+) -> Result<(), AgentError> {
+    let text = if text.len() > MAX_AGENT_EVENT_BYTES {
+        let mut end = MAX_AGENT_EVENT_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        &text[..end]
+    } else {
+        text
+    };
+    if text.is_empty() {
+        return Ok(());
+    }
+    if output.len().saturating_add(text.len()) > MAX_AGENT_OUTPUT_BYTES {
+        return Err(agent_error(
+            "agent_output_too_large",
+            "the local agent produced too much output",
+        ));
+    }
+    output.push_str(text);
+    *emitted_output = true;
+    sender
+        .send(Event::Output { request_id: request_id.to_owned(), text: text.to_owned() })
+        .map_err(|_| agent_error("agent_runtime_closed", "the local agent runtime closed"))
+}
+
+fn extract_agent_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(values) => {
+            Some(values.iter().filter_map(extract_agent_text).collect::<Vec<_>>().join(""))
+        }
+        Value::Object(object) => {
+            for key in ["text", "delta", "content", "message", "msg", "part", "result"] {
+                if let Some(value) = object.get(key) {
+                    if let Some(text) = extract_agent_text(value) {
+                        if !text.is_empty() {
+                            return Some(text);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn agent_line_text(line: &str) -> Option<String> {
+    match serde_json::from_str::<Value>(line) {
+        Ok(value) => extract_agent_text(&value),
+        Err(_) => Some(line.to_owned()),
+    }
+}
+
+fn read_agent_lines(stdout: impl Read, sender: mpsc::Sender<Result<String, String>>) {
+    let mut reader = BufReader::new(stdout);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => return,
+            Ok(_) if line.len() > MAX_AGENT_EVENT_BYTES => {
+                let _ = sender.send(Err("the local agent returned an oversized event".to_owned()));
+                return;
+            }
+            Ok(_) => {
+                let text = String::from_utf8_lossy(&line).trim_end().to_owned();
+                if !text.is_empty() && sender.send(Ok(text)).is_err() {
+                    return;
+                }
+            }
+            Err(error) => {
+                let _ = sender.send(Err(error.to_string()));
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn terminate_child(child: &mut Child) {
+    let process_group = format!("-{}", child.id());
+    let _ = Command::new("kill").args(["-TERM", "--", &process_group]).status();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline && child.try_wait().ok().flatten().is_none() {
+        thread::sleep(Duration::from_millis(10));
+    }
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = Command::new("kill").args(["-KILL", "--", &process_group]).status();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn run_provider(
+    request_id: &str,
+    provider: &str,
+    payload: &AgentRunPayload,
+    workspace: &Path,
+    cancel: &AtomicBool,
+    sender: &mpsc::Sender<Event>,
+) -> Result<AgentRunOutcome, AgentError> {
+    let prompt = build_agent_prompt(payload);
+    let mut command = agent_command(provider, &prompt, workspace)?;
+    let mut child = command.spawn().map_err(|error| {
+        agent_error("agent_start_failed", format!("could not start {provider}: {error}"))
+    })?;
+    if let Some(mut stdin) = child.stdin.take() {
+        if provider == "codex" {
+            if let Err(error) = stdin.write_all(prompt.as_bytes()) {
+                terminate_child(&mut child);
+                return Err(agent_error(
+                    "agent_start_failed",
+                    format!("could not send the prompt to {provider}: {error}"),
+                ));
+            }
+        }
+        let _ = stdin.flush();
+    }
+    let stdout = child.stdout.take().ok_or_else(|| {
+        agent_error("agent_start_failed", "the local agent stdout is unavailable")
+    })?;
+    let (line_sender, line_receiver) = mpsc::channel();
+    let output_thread = thread::spawn(move || read_agent_lines(stdout, line_sender));
+    let started = Instant::now();
+    let mut output = String::new();
+    let mut emitted_output = false;
+    let mut status = None;
+    let mut cancelled = false;
+    let mut timed_out = false;
+    loop {
+        match line_receiver.recv_timeout(AGENT_POLL_INTERVAL) {
+            Ok(Ok(line)) => {
+                let Some(text) = agent_line_text(&line) else {
+                    continue;
+                };
+                if let Err(error) =
+                    send_agent_output(sender, request_id, &text, &mut output, &mut emitted_output)
+                {
+                    terminate_child(&mut child);
+                    let _ = output_thread.join();
+                    return Err(error);
+                }
+            }
+            Ok(Err(error)) => {
+                terminate_child(&mut child);
+                return Err(agent_error("agent_protocol_error", error));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {}
+        }
+        if cancel.load(Ordering::SeqCst) {
+            cancelled = true;
+            terminate_child(&mut child);
+            break;
+        }
+        if started.elapsed() >= AGENT_TIMEOUT {
+            timed_out = true;
+            terminate_child(&mut child);
+            break;
+        }
+        match child.try_wait() {
+            Ok(Some(exit_status)) => {
+                status = Some(exit_status);
+                break;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                terminate_child(&mut child);
+                return Err(agent_error("agent_failed", error.to_string()));
+            }
+        }
+    }
+    if status.is_none() && !cancelled && !timed_out {
+        status = child.wait().ok();
+    }
+    let _ = output_thread.join();
+    while let Ok(message) = line_receiver.try_recv() {
+        if let Ok(line) = message {
+            let Some(text) = agent_line_text(&line) else {
+                continue;
+            };
+            send_agent_output(sender, request_id, &text, &mut output, &mut emitted_output)?;
+        }
+    }
+    if cancelled {
+        return Ok(AgentRunOutcome::Cancelled);
+    }
+    if timed_out {
+        return Err(agent_error("agent_timeout", "the local agent run timed out"));
+    }
+    let status = status.ok_or_else(|| {
+        agent_error("agent_failed", "the local agent did not report an exit status")
+    })?;
+    if !status.success() {
+        return Err(agent_error("agent_failed", "the local agent exited unsuccessfully"));
+    }
+    if output.trim().is_empty() {
+        return Err(agent_error("agent_empty_output", "the local agent returned no text"));
+    }
+    Ok(AgentRunOutcome::Completed { text: output, provider: provider.to_owned(), emitted_output })
+}
+
+fn run_agent(
+    request_id: &str,
+    payload: &AgentRunPayload,
+    selected_provider: &str,
+    cancel: Arc<AtomicBool>,
+    sender: &mpsc::Sender<Event>,
+) -> Result<AgentRunOutcome, AgentError> {
+    let workspace = agent_workspace(&payload.workspace)?;
+    let providers = if payload.auto_fallback && selected_provider == "opencode" {
+        vec!["opencode", "codex"]
+    } else if payload.auto_fallback && selected_provider == "codex" {
+        vec!["codex", "opencode"]
+    } else {
+        vec![selected_provider]
+    };
+    let mut last_error = None;
+    for provider in &providers {
+        match run_provider(request_id, provider, payload, &workspace, &cancel, sender) {
+            Ok(outcome) => return Ok(outcome),
+            Err(error) if error.code == "agent_start_failed" && providers.len() > 1 => {
+                last_error = Some(error);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| agent_error("agent_unavailable", "no local agent is available")))
 }
 
 fn process_request_with_history(
@@ -592,6 +1186,31 @@ mod tests {
         assert!(
             matches!(events[0], Event::Error { ref code, .. } if code == "unsupported_protocol")
         );
+    }
+
+    #[test]
+    fn agent_payload_rejects_unsupported_provider() {
+        let events = process_line(&request(
+            "agent_run",
+            json!({
+                "note_id": "note-1",
+                "prompt": "hello",
+                "provider": "unknown",
+                "card_context": {"text": "card"},
+                "history": []
+            }),
+        ));
+
+        assert!(
+            matches!(events[1], Event::Error { ref code, .. } if code == "invalid_agent_payload")
+        );
+    }
+
+    #[test]
+    fn agent_line_text_extracts_nested_output() {
+        let line = r#"{"type":"text","part":{"text":"hello"}}"#;
+        assert_eq!(agent_line_text(line).as_deref(), Some("hello"));
+        assert_eq!(agent_line_text("plain output").as_deref(), Some("plain output"));
     }
 
     #[test]

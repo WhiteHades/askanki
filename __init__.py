@@ -11,8 +11,11 @@ from aqt import gui_hooks, mw
 from aqt.webview import WebContent
 
 from askanki_bridge import (
+    MAX_AGENT_PAYLOAD_BYTES,
     BridgeError,
     SidecarClient,
+    _clean_agent_history,
+    _clean_card_context,
     clean_config,
     completed_result,
     error_result,
@@ -196,7 +199,8 @@ def _call_sidecar(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         return _error(error["code"], error["message"])
     result = completed_result(events)
     if result is None:
-        return _ok({"events": events})
+        cancelled = any(event.get("event") == "cancelled" for event in events)
+        return _ok({"cancelled": cancelled, "events": events})
     return _ok(result)
 
 
@@ -217,6 +221,34 @@ def _dispatch(payload: Any, context: Any) -> dict[str, Any]:
             return _error(error.code, str(error))
     if action == "sidecar_ping":
         return _call_sidecar("ping", {})
+    if action == "agent_run":
+        try:
+            note_id = _context_note(request_payload, context)
+            config = get_runtime_config()
+            prompt = validate_text(request_payload.get("prompt"))
+            card_context = _clean_card_context(request_payload.get("card_context", {}))
+            history = _clean_agent_history(request_payload.get("history", []))
+            payload = {
+                "note_id": note_id,
+                "prompt": prompt,
+                "provider": config["provider"],
+                "auto_fallback": config["auto_fallback"],
+                "workspace": config["workspace"],
+                "system_instruction": config["system_instruction"],
+                "card_context": card_context,
+                "history": history,
+            }
+            if len(json.dumps(payload, separators=(",", ":")).encode("utf-8")) > MAX_AGENT_PAYLOAD_BYTES:
+                raise BridgeError("invalid_agent_payload", "agent request exceeds the maximum size")
+        except BridgeError as error:
+            return _error(error.code, str(error))
+        return _call_sidecar("agent_run", payload)
+    if action == "agent_cancel":
+        try:
+            note_id = _context_note(request_payload, context)
+        except BridgeError as error:
+            return _error(error.code, str(error))
+        return _call_sidecar("agent_cancel", {"note_id": note_id})
     if action == "history_load":
         try:
             note_id = _context_note(request_payload, context)
