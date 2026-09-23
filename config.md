@@ -4,7 +4,7 @@ AskAnki stores packaged defaults in `config.json`. User-specific settings are st
 
 ## Local agents
 
-AskAnki uses locally installed OpenCode and Codex command-line programs. OpenCode is the default, with automatic fallback only when the selected local agent is unavailable or cannot start. The selected workspace is the only directory the agent may use without an explicit approval for a side effect. Model and provider settings remain owned by the selected CLI.
+AskAnki uses locally installed OpenCode and Codex command-line programs. OpenCode is the default, with automatic fallback only when the selected local agent is unavailable or cannot start. The selected workspace is the only directory the agent may use without an explicit approval for a side effect. The current adapters keep write-capable tools disabled until the approval relay is available. Model and provider settings remain owned by the selected CLI.
 
 ## Chat history
 
