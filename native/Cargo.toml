@@ -1,0 +1,19 @@
+[package]
+name = "askanki-core"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Local runtime core for the AskAnki Anki add-on"
+
+[lib]
+name = "askanki_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "askanki-core"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
