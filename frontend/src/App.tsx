@@ -9,7 +9,7 @@ import { callBridge, getRuntimeConfig, hasBridge } from '@/lib/bridge'
 import { getCardContext, observeCardContext } from '@/lib/card-context'
 import type { AgentRunPoll, AgentRunResult, AgentRunStart, CardContext, ChatMessage, HistoryEntry, RunState, RunStep, RuntimeConfig } from '@/types'
 
-const emptyCard: CardContext = { noteId: null, text: '', imageCount: 0, hasImages: false, hasMath: false, hasCode: false }
+const emptyCard: CardContext = { noteId: null, text: '', front: '', back: '', math: [], code: [], tables: [], imageLabels: [], imageCount: 0, hasImages: false, hasMath: false, hasCode: false, signature: '' }
 
 function messageId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -63,10 +63,10 @@ function App() {
     if (!noteId) return
     const context = getCardContext(noteId)
     setCard(context)
-    cardSignatureRef.current = `${noteId}:${context.text}:${context.imageCount}`
+    cardSignatureRef.current = `${noteId}:${context.signature}`
     void loadHistory(noteId)
     return observeCardContext(noteId, (next) => {
-      const signature = `${noteId}:${next.text}:${next.imageCount}`
+      const signature = `${noteId}:${next.signature}`
       setCard(next)
       if (signature !== cardSignatureRef.current) {
         cardSignatureRef.current = signature

@@ -17,10 +17,17 @@ export type HistoryEntry = {
 export type CardContext = {
   noteId: string | null
   text: string
+  front: string
+  back: string
+  math: string[]
+  code: string[]
+  tables: string[]
+  imageLabels: string[]
   imageCount: number
   hasImages: boolean
   hasMath: boolean
   hasCode: boolean
+  signature: string
 }
 
 export type ChatMessage = {

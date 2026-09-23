@@ -536,9 +536,23 @@ fn validate_agent_payload(payload: &AgentRunPayload) -> Result<(), String> {
         validate_text(content)?;
         total = total.saturating_add(content.len());
     }
-    if let Some(text) = payload.card_context.get("text").and_then(Value::as_str) {
-        validate_text(text)?;
-        total = total.saturating_add(text.len());
+    for key in ["text", "front", "back"] {
+        if let Some(text) = payload.card_context.get(key).and_then(Value::as_str) {
+            validate_text(text)?;
+            total = total.saturating_add(text.len());
+        }
+    }
+    for key in ["math", "code", "tables", "image_labels"] {
+        if let Some(values) = payload.card_context.get(key).and_then(Value::as_array) {
+            if values.len() > 32 {
+                return Err("card context section exceeds the maximum number of items".to_owned());
+            }
+            for value in values {
+                let text = value.as_str().ok_or("card context item is not text")?;
+                validate_text(text)?;
+                total = total.saturating_add(text.len());
+            }
+        }
     }
     if total > MAX_AGENT_OUTPUT_BYTES {
         return Err("agent request exceeds the maximum size".to_owned());
@@ -575,8 +589,38 @@ fn build_agent_prompt(payload: &AgentRunPayload) -> String {
         .card_context
         .get("text")
         .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
         .unwrap_or("No card text is available.");
     prompt.push_str(card_text);
+    for (label, key) in [
+        ("Front", "front"),
+        ("Back", "back"),
+        ("Math", "math"),
+        ("Code", "code"),
+        ("Tables", "tables"),
+        ("Image labels", "image_labels"),
+    ] {
+        if let Some(value) = payload.card_context.get(key) {
+            let rendered = match value {
+                Value::String(text) if !text.trim().is_empty() => text.clone(),
+                Value::Array(values) => values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|text| !text.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => String::new(),
+            };
+            if !rendered.is_empty() {
+                prompt.push_str(&format!("\n{label}:\n{rendered}"));
+            }
+        }
+    }
+    if let Some(image_count) = payload.card_context.get("image_count").and_then(Value::as_u64) {
+        if image_count > 0 {
+            prompt.push_str(&format!("\nImages: {image_count}"));
+        }
+    }
     prompt.push_str("\n\nConversation:\n");
     for entry in &payload.history {
         let role = entry.get("role").and_then(Value::as_str).unwrap_or("user");
@@ -1214,6 +1258,33 @@ mod tests {
         let line = r#"{"type":"text","part":{"text":"hello"}}"#;
         assert_eq!(agent_line_text(line).as_deref(), Some("hello"));
         assert_eq!(agent_line_text("plain output").as_deref(), Some("plain output"));
+    }
+
+    #[test]
+    fn agent_prompt_preserves_structured_card_sections() {
+        let payload: AgentRunPayload = serde_json::from_value(json!({
+            "note_id": "note-1",
+            "prompt": "explain",
+            "provider": "opencode",
+            "workspace": "",
+            "system_instruction": "",
+            "card_context": {
+                "text": "full card",
+                "front": "question",
+                "back": "answer",
+                "math": ["x + 1"],
+                "code": ["const answer = 42"],
+                "tables": ["cell"],
+                "image_labels": ["diagram"],
+                "image_count": 1
+            },
+            "history": []
+        }))
+        .unwrap();
+        let prompt = build_agent_prompt(&payload);
+        assert!(prompt.contains("Front:\nquestion"));
+        assert!(prompt.contains("Math:\nx + 1"));
+        assert!(prompt.contains("Images: 1"));
     }
 
     #[test]

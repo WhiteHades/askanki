@@ -65,7 +65,7 @@ export function StreamText({ content, streaming }: { content: string; streaming?
 
 export function ContextCard({ context }: { context: CardContext }) {
   const excerpt = context.text.length > 260 ? `${context.text.slice(0, 260)}…` : context.text
-  const metadata = [context.imageCount ? `${context.imageCount} image${context.imageCount === 1 ? '' : 's'}` : null, context.hasMath ? 'Math' : null, context.hasCode ? 'Code' : null].filter(Boolean).join(' · ')
+  const metadata = [context.imageCount ? `${context.imageCount} image${context.imageCount === 1 ? '' : 's'}` : null, context.front && context.back ? 'Front + back' : null, context.hasMath || context.math.length ? 'Math' : null, context.hasCode || context.code.length ? 'Code' : null, context.tables.length ? 'Table' : null].filter(Boolean).join(' · ')
   return (
     <article className="context-card">
       <div className="context-card-header">

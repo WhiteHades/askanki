@@ -74,10 +74,11 @@ class BridgeTests(unittest.TestCase):
             validate_text("é" * 65_537)
 
     def test_agent_payload_helpers_bound_card_context_and_history(self):
-        card = _clean_card_context({"text": "hola", "image_count": 1, "has_images": True})
+        card = _clean_card_context({"text": "hola", "front": "hola", "image_count": 1, "imageLabels": ["diagram"], "has_images": True})
         history = _clean_agent_history([{"role": "user", "content": "hola"}])
 
         self.assertEqual(card["text"], "hola")
+        self.assertEqual(card["image_labels"], ["diagram"])
         self.assertEqual(history, [{"role": "user", "content": "hola"}])
         with self.assertRaises(BridgeError):
             _clean_card_context({"image_count": -1})

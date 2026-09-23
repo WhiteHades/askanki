@@ -110,16 +110,30 @@ def validate_text(value: Any) -> str:
 def _clean_card_context(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise BridgeError("invalid_card_context", "card context must be an object")
-    text = validate_text(value.get("text", ""))
+    result: dict[str, Any] = {
+        "text": validate_text(value.get("text", "")),
+        "front": validate_text(value.get("front", "")),
+        "back": validate_text(value.get("back", "")),
+    }
+    total = sum(_byte_length(result[key]) for key in ("text", "front", "back"))
+    for key in ("math", "code", "tables", "image_labels"):
+        values = value.get(key, value.get("imageLabels", []) if key == "image_labels" else [])
+        if not isinstance(values, list) or len(values) > 32:
+            raise BridgeError("invalid_card_context", "card context sections are invalid")
+        cleaned = [validate_text(item) for item in values]
+        total += sum(_byte_length(item) for item in cleaned)
+        result[key] = cleaned
     image_count = value.get("image_count", 0)
     if isinstance(image_count, bool) or not isinstance(image_count, int) or not 0 <= image_count <= 100:
         raise BridgeError("invalid_card_context", "card image count is invalid")
-    result: dict[str, Any] = {"text": text, "image_count": image_count}
+    result["image_count"] = image_count
     for key in ("has_images", "has_math", "has_code"):
         flag = value.get(key, False)
         if not isinstance(flag, bool):
             raise BridgeError("invalid_card_context", "card context flags are invalid")
         result[key] = flag
+    if total > MAX_AGENT_PAYLOAD_BYTES:
+        raise BridgeError("invalid_card_context", "card context exceeds the maximum size")
     return result
 
 
