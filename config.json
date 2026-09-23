@@ -1,6 +1,7 @@
 {
   "provider": "opencode",
   "workspace": "",
+  "auto_fallback": true,
   "history_retention_days": 30,
   "system_instruction": "You are a careful learning assistant integrated into Anki. Explain the current card clearly, use the language-learning profile when it is relevant, and be concise."
 }
